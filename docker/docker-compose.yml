@@ -7,17 +7,18 @@
 # must be running first.
 #
 # Easiest: ./docker/deploy.sh. It creates both settings files on the first
-# run, walks through them, builds, and runs. It also hands config.yml's
-# docker: section (the network name) to compose through docker/.compose.env.
+# run, walks through them, builds, starts OurHomeInbox and waits until the web
+# page answers. It also hands config.yml's docker: section (network, port,
+# who can reach it) and web.port to compose through docker/.compose.env.
 #
 # By hand, from the repo root:
 #   copy .env.example to .env and config.example.yml to config.yml, fill them in
 #   docker network create ourhome_net        # skip if it already exists
-#   docker compose -f docker/docker-compose.yml up --build
-# (the network is then always ourhome_net)
+#   docker compose -f docker/docker-compose.yml up -d --build
+# (then always ourhome_net, and the web page on http://127.0.0.1:8080)
 #
-# For now it reads each mailbox once, captures new messages into the repo's
-# data/ folder, and exits, so it does not restart on its own.
+# It runs until stopped: the web page and API, and every mailbox read every
+# capture.every_minutes. Captured mail and accounts live in the repo's data/.
 
 name: ourhome-inbox
 
@@ -28,7 +29,17 @@ services:
       dockerfile: docker/Dockerfile
     image: ourhome/ourhome-inbox:dev
     container_name: ourhome_inbox
-    restart: "no"
+    restart: unless-stopped
+    # The web page. DOCKER_BIND decides who can open it: 127.0.0.1 is this
+    # computer only, 0.0.0.0 your whole network.
+    ports:
+      - "${DOCKER_BIND:-127.0.0.1}:${DOCKER_PORT:-8080}:${WEB_PORT:-8080}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:${WEB_PORT:-8080}/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     # Runs as you (deploy.sh fills these in on Linux) so the captured mail in
     # data/ belongs to you. Docker Desktop on Windows and macOS ignores this.
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
@@ -47,8 +58,8 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      # Captured mail: raw emails, attachments and what was read from them.
-      # Real, private mail; the repo's .gitignore keeps it out of git.
+      # Captured mail (raw emails, attachments, what was read from them) and
+      # the accounts database. Real, private data; .gitignore keeps it out of git.
       - type: bind
         source: ../data
         target: /app/data

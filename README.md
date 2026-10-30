@@ -4,8 +4,10 @@ Reads bills and payment confirmations from your email and hands them to
 [Our Home](https://github.com/EOSOClub/OurHome). It is meant to replace the
 Paperless-ngx bill import.
 
-**Status: early development.** It loads its settings and checks that it can
-reach a Proton Mail folder through Proton Mail Bridge. It does not read bills yet.
+**Status: early development.** It reads a bills folder through Proton Mail
+Bridge on a schedule and keeps everything it captured from each email, with a
+web page to sign in and look through it. It does not pick out amounts or due
+dates yet.
 
 ## What it will do
 

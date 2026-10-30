@@ -9,13 +9,21 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:web": "vite build",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit",
+    "dev:server": "tsx watch src/index.ts serve",
+    "dev:web": "vite",
+    "capture": "tsx src/index.ts capture",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "test": "vitest run"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@hono/zod-validator": "^0.9.1",
+    "hono": "^4.13.14",
     "htmlparser2": "^12.0.0",
     "imapflow": "^2.10.0",
     "linkify-it": "^6.1.0",
@@ -24,9 +32,23 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-query": "^5.105.0",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "jsdom": "^30.1.3",
+    "lucide-react": "^1.64.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "^8.5.1",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
+    "vite": "^8.3.5",
     "vitest": "^4.1.12"
   }
 }

@@ -44,7 +44,14 @@ describe("explainConnectError", () => {
   const mailbox: MailboxConfig = {
     name: "Proton bills",
     provider: "proton-bridge",
-    imap: { host: "protonmail-bridge", port: 993, security: "tls", username: "me@proton.me", password: "x" },
+    imap: {
+      host: "protonmail-bridge",
+      port: 993,
+      security: "tls",
+      username: "me@proton.me",
+      passwordEnv: "PROTON_BRIDGE_PASSWORD",
+      password: "x",
+    },
     folder: "INBOX",
   };
   const explain = (err: object) => explainConnectError(mailbox, Object.assign(new Error("raw"), err), false).message;

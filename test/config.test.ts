@@ -58,12 +58,29 @@ describe("loadConfig", () => {
             port: 143,
             security: "none",
             username: "me@proton.me",
+            passwordEnv: "PROTON_BRIDGE_PASSWORD",
             password: "bridge-pass",
           },
           folder: "Folders/Bills",
         },
       ],
+      web: { port: 8080 },
+      capture: { everyMinutes: 15 },
     });
+  });
+
+  it("reads the web and capture settings when given", () => {
+    const yaml = `${PROTON}web:\n  port: 9000\ncapture:\n  every_minutes: 5\n`;
+    const config = loadConfig(setup(yaml, { PROTON_BRIDGE_PASSWORD: "x" }));
+    expect(config.web).toEqual({ port: 9000 });
+    expect(config.capture).toEqual({ everyMinutes: 5 });
+  });
+
+  it("rejects a docker bind that is not an address", () => {
+    const problems = problemsOf(() =>
+      loadConfig(setup(`${PROTON}docker:\n  bind: everywhere\n`, { PROTON_BRIDGE_PASSWORD: "x" })),
+    );
+    expect(problems[0]).toContain("docker.bind");
   });
 
   it.each(["none", "starttls", "tls"])("accepts security: %s", (security) => {

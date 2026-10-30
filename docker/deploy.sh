@@ -13,11 +13,12 @@
 # reads config.yml's `docker:` section (with a pinned yq container, so nothing
 # needs installing) into .compose.env, which compose uses for the network.
 #
-# For now OurHomeInbox reads each mailbox once, captures the messages it has
-# not captured before into the repo-root data/ folder, and exits, so this runs
-# it in the foreground and reports the result.
+# OurHomeInbox then runs until stopped: the web page and API, and every
+# mailbox read on the capture.every_minutes schedule into the repo-root data/
+# folder. This starts it in the background and waits until the web page
+# answers.
 #
-# Usage:  ./deploy.sh [-n] [-s|-y] [--no-build]
+# Usage:  ./deploy.sh [-n] [-s|-y] [--no-build] [--timeout S]
 
 set -uo pipefail
 
@@ -31,7 +32,9 @@ SECRETS=../.env            # the repo-root secrets; compose passes them to the a
 ENV_FILE=.compose.env      # generated from SETTINGS on every run; don't edit
 YQ_IMAGE=mikefarah/yq:4.44.3
 # config.yml `docker:` section -> DOCKER_* for compose.
-YQ_EXPR='.docker // {} | to_entries | .[] | "DOCKER_" + (.key | upcase) + "=" + ((.value // "") | tostring)'
+# config.yml `docker:` section -> DOCKER_*, plus web.port -> WEB_PORT (the
+# port inside the container).
+YQ_EXPR='(.docker // {} | to_entries | .[] | "DOCKER_" + (.key | upcase) + "=" + ((.value // "") | tostring)), ("WEB_PORT=" + ((.web.port // 8080) | tostring))'
 SERVICE=ourhome-inbox
 # The Proton Bridge from OurHomeServices: its container, and its setup guide.
 BRIDGE_CONTAINER=ourhome_bridge
@@ -45,13 +48,14 @@ PLACEHOLDER_USER=you@proton.me
 NO_BUILD=0
 NO_CACHE=0
 SETUP=ask      # ask | yes (-s) | no (-y)
+TIMEOUT=120    # seconds to wait for the web page
 
 usage() {
   cat <<EOF
 ${BOLD}OurHomeInbox - Docker deploy${RESET}
 
 Sets up settings on the first run, builds OurHomeInbox from this checkout,
-then runs it and reports whether every mailbox could be reached.
+starts it, then waits until its web page answers.
 
 ${BOLD}Usage:${RESET}
   ./deploy.sh [options]
@@ -60,7 +64,9 @@ ${BOLD}Options:${RESET}
   -n, --no-cache       Rebuild every layer and re-pull the base image.
   -s, --setup          Go straight to the settings walkthrough.
   -y, --yes            Don't ask about settings; deploy with what is saved.
-      --no-build       Skip rebuilding the image; just run it.
+      --no-build       Skip rebuilding the image; just (re)start it.
+      --timeout SECONDS
+                       How long to wait for the web page (default: ${TIMEOUT}).
   -h, --help           Show this help and exit.
 
 ${BOLD}Environment:${RESET}
@@ -183,8 +189,8 @@ ask_yn() {  # $1 question  $2 default y|n; returns 0 for yes
 # and the Docker network. Answers are held until the end, so quitting part way
 # (Ctrl+C) changes nothing, and only what changed is written back.
 setup_wizard() {
-  local out line count=0 host="" port="" security="" user="" folder="" pw_env="" net="" has_pw=0
-  local new_host new_port new_security new_user new_pw new_folder new_net expr="" sep="" tmp args=()
+  local out line count=0 host="" port="" security="" user="" folder="" pw_env="" net="" dport="" dbind="" has_pw=0
+  local new_host new_port new_security new_user new_pw new_folder new_net new_dport new_dbind expr="" sep="" tmp args=()
 
   out=$(docker run --rm -i "$YQ_IMAGE" '"count=" + (.mailboxes // [] | length | tostring),
       "host=" + ((.mailboxes[0].imap.host // "") | tostring),
@@ -193,7 +199,9 @@ setup_wizard() {
       "user=" + ((.mailboxes[0].imap.username // "") | tostring),
       "pw_env=" + ((.mailboxes[0].imap.password_env // "") | tostring),
       "folder=" + ((.mailboxes[0].folder // "") | tostring),
-      "net=" + ((.docker.network // "") | tostring)' < "$SETTINGS") \
+      "net=" + ((.docker.network // "") | tostring),
+      "dport=" + ((.docker.port // "") | tostring),
+      "dbind=" + ((.docker.bind // "") | tostring)' < "$SETTINGS") \
     || fail "Could not read config.yml - check it is valid YAML."
   while IFS= read -r line; do
     case "$line" in
@@ -205,6 +213,8 @@ setup_wizard() {
       pw_env=*)   pw_env=${line#*=} ;;
       folder=*)   folder=${line#*=} ;;
       net=*)      net=${line#*=} ;;
+      dport=*)    dport=${line#*=} ;;
+      dbind=*)    dbind=${line#*=} ;;
     esac
   done <<< "$out"
   [ "$count" -gt 0 ] 2>/dev/null \
@@ -267,7 +277,21 @@ setup_wizard() {
     warn "Use letters, numbers, dots, dashes and underscores only."
   done
 
-  # Only the keys that changed are rewritten. The port goes in as a number.
+  info "The web page opens at http://<this computer>:<port>."
+  while true; do
+    ask "Web page port on this computer" "${dport:-8080}"; new_dport=$REPLY
+    [[ $new_dport =~ ^[0-9]+$ ]] && [ "$new_dport" -ge 1 ] && [ "$new_dport" -le 65535 ] && break
+    warn "A port is a number from 1 to 65535."
+  done
+  info "Who can open it: 127.0.0.1 (only this computer) or 0.0.0.0 (any device"
+  info "on your network)."
+  while true; do
+    ask "Who can open the web page (127.0.0.1 or 0.0.0.0)" "${dbind:-127.0.0.1}"; new_dbind=$REPLY
+    [[ $new_dbind =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && break
+    warn "Type 127.0.0.1 or 0.0.0.0 (or another address of this computer)."
+  done
+
+  # Only the keys that changed are rewritten. Ports go in as numbers.
   if [ "$new_host" != "$host" ]; then
     export W_HOST=$new_host; args+=(-e W_HOST)
     expr+="$sep.mailboxes[0].imap.host = strenv(W_HOST)"; sep=" | "
@@ -291,6 +315,14 @@ setup_wizard() {
   if [ "$new_net" != "$net" ]; then
     export W_NET=$new_net; args+=(-e W_NET)
     expr+="$sep.docker.network = strenv(W_NET)"; sep=" | "
+  fi
+  if [ "$new_dport" != "$dport" ]; then
+    export W_DPORT=$new_dport; args+=(-e W_DPORT)
+    expr+="$sep.docker.port = (strenv(W_DPORT) | to_number)"; sep=" | "
+  fi
+  if [ "$new_dbind" != "$dbind" ]; then
+    export W_DBIND=$new_dbind; args+=(-e W_DBIND)
+    expr+="$sep.docker.bind = strenv(W_DBIND)"; sep=" | "
   fi
 
   printf '\n'
@@ -325,11 +357,14 @@ while [ $# -gt 0 ]; do
     -s|--setup)     SETUP=yes ;;
     -y|--yes)       SETUP=no ;;
     --no-build)     NO_BUILD=1 ;;
+    --timeout)      shift; TIMEOUT=${1:-} ;;
+    --timeout=*)    TIMEOUT=${1#*=} ;;
     -h|--help)      usage; exit 0 ;;
     *)              printf 'Unknown option: %s\n\n' "$1" >&2; usage; exit 2 ;;
   esac
   shift
 done
+case "$TIMEOUT" in ''|*[!0-9]*) printf 'error: --timeout must be a whole number of seconds\n' >&2; exit 2 ;; esac
 
 # ===========================================================================
 banner
@@ -430,15 +465,36 @@ else
 fi
 
 # --- Run -------------------------------------------------------------------
-step "Read mailboxes"
-"${DC[@]}" up --no-build --exit-code-from "$SERVICE"
-RC=$?
+step "Start OurHomeInbox"
+"${DC[@]}" up -d --no-build --force-recreate "$SERVICE" || fail "Could not start OurHomeInbox (see above)."
+ok "Started"
+
+# The container's own health check asks the web page /api/health. One line per
+# check, so a slow start is visible.
+CONTAINER=$(docker compose --env-file "$ENV_FILE" ps -q "$SERVICE" 2>/dev/null)
+START=$SECONDS
+while true; do
+  STATE=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CONTAINER" 2>/dev/null)
+  case "$STATE" in
+    "running healthy") ok "The web page answers"; break ;;
+    exited*|dead*)     docker logs --tail 30 "$CONTAINER" 2>&1 | sed 's/^/    /'
+                       fail "OurHomeInbox stopped right after starting. Its log is above." ;;
+  esac
+  [ $((SECONDS - START)) -ge "$TIMEOUT" ] && {
+    docker logs --tail 30 "$CONTAINER" 2>&1 | sed 's/^/    /'
+    fail "The web page did not answer within ${TIMEOUT}s. Its log is above."
+  }
+  info "$(date +%H:%M:%S) waiting for the web page (${STATE:-starting})"
+  sleep 3
+done
 
 step "Summary"
-if [ "$RC" = 0 ]; then
-  ok "Every mailbox was read. Captured mail: $DATA_DIR/mail"
-else
-  errln "Not everything was read or captured (exit code $RC). The lines above say why."
-  info "Fix it, then run ./deploy.sh again. To change settings: ./deploy.sh -s"
-fi
-exit "$RC"
+DPORT=$(env_get DOCKER_PORT || true); DPORT=${DPORT:-8080}
+DBIND=$(env_get DOCKER_BIND || true); DBIND=${DBIND:-127.0.0.1}
+if [ "$DBIND" = 0.0.0.0 ]; then HOST=$(hostname); else HOST=$DBIND; fi
+ok "OurHomeInbox is running: http://${HOST}:${DPORT}"
+[ "$DBIND" = 0.0.0.0 ] && info "Other devices on your network can open it too."
+info "It reads every mailbox now and then on its schedule. Captured mail: $DATA_DIR/mail"
+info "Recent log:"
+docker logs --tail 12 "$CONTAINER" 2>&1 | sed 's/^/    /'
+info "Follow the log: docker logs -f ourhome_inbox    Stop it: docker stop ourhome_inbox"

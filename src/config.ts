@@ -12,6 +12,9 @@ import { z } from "zod";
 /** Used when OURHOMEINBOX_CONFIG is not set. Docker sets it to /app/config.yml. */
 export const DEFAULT_CONFIG_PATH = "config.yml";
 
+export const DEFAULT_WEB_PORT = 8080;
+export const DEFAULT_CAPTURE_MINUTES = 15;
+
 export const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
 
@@ -63,6 +66,14 @@ const fileSchema = z
         (list) => new Set(list.map((m) => mailboxSlug(m.name))).size === list.length,
         "mailbox names must differ by more than capitals, spaces and punctuation, since each gets its own data folder",
       ),
+    web: z
+      .object({ port: z.number().int().min(1).max(65535).default(DEFAULT_WEB_PORT) })
+      .strict()
+      .default({ port: DEFAULT_WEB_PORT }),
+    capture: z
+      .object({ every_minutes: z.number().int().min(1).max(1440).default(DEFAULT_CAPTURE_MINUTES) })
+      .strict()
+      .default({ every_minutes: DEFAULT_CAPTURE_MINUTES }),
     // Read by docker/deploy.sh for Docker Compose, not by the app. Checked here
     // so a typo in it is caught the same way as anywhere else.
     docker: z
@@ -71,6 +82,8 @@ const fileSchema = z
           .string()
           .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/, "must be a Docker network name, like ourhome_net")
           .optional(),
+        port: z.number().int().min(1).max(65535).optional(),
+        bind: z.ipv4("must be an address like 127.0.0.1 (this computer only) or 0.0.0.0 (your network)").optional(),
       })
       .strict()
       .optional(),
@@ -82,6 +95,8 @@ export interface ImapConfig {
   port: number;
   security: Security;
   username: string;
+  /** The .env line the password came from (shown in settings; the password never is). */
+  passwordEnv: string;
   password: string;
 }
 
@@ -95,6 +110,8 @@ export interface MailboxConfig {
 export interface Config {
   logLevel: LogLevel;
   mailboxes: MailboxConfig[];
+  web: { port: number };
+  capture: { everyMinutes: number };
 }
 
 /** The folder name a mailbox's captured mail is kept under: "Proton bills" -> "proton-bills". */
@@ -157,13 +174,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     return {
       name: mailbox.name,
       provider: mailbox.provider,
-      imap: { ...imap, password },
+      imap: { ...imap, passwordEnv: password_env, password },
       folder: mailbox.folder,
     };
   });
   if (problems.length > 0) throw new ConfigError(problems);
 
-  return { logLevel: parsed.data.log_level, mailboxes };
+  return {
+    logLevel: parsed.data.log_level,
+    mailboxes,
+    web: { port: parsed.data.web.port },
+    capture: { everyMinutes: parsed.data.capture.every_minutes },
+  };
 }
 
 /** `["mailboxes", 0, "username"]` -> `mailboxes[0].username` */

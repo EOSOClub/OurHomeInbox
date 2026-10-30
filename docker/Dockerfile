@@ -8,8 +8,9 @@ FROM node:24-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY tsconfig.json tsconfig.build.json ./
+COPY tsconfig.json tsconfig.build.json vite.config.ts ./
 COPY src ./src
+COPY web ./web
 RUN npm run build
 
 FROM node:24-slim
@@ -22,4 +23,6 @@ COPY --from=build /app/dist ./dist
 # Captured mail. docker-compose.yml mounts the repo's data/ folder here.
 RUN mkdir -p /app/data && chown node:node /app/data
 USER node
-CMD ["node", "dist/index.js"]
+# The web page and API (the port is web.port in config.yml).
+EXPOSE 8080
+CMD ["node", "dist/index.js", "serve"]

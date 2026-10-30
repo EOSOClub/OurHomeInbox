@@ -1,0 +1,92 @@
+/* The app's look: Tailwind plus a small set of colour tokens that switch
+   between light and dark with the system setting. Components use the token
+   utilities (bg-surface, text-muted, border-line and so on). */
+
+@import "tailwindcss";
+
+:root {
+  color-scheme: light dark;
+
+  --page: #f6f7f5;
+  --surface: #ffffff;
+  --surface-muted: #eef1ee;
+  --line: #d9dfdb;
+  --ink: #18201c;
+  --muted: #4f5b55;
+  --accent: #0f6b62;
+  --accent-hover: #0b5850;
+  --on-accent: #ffffff;
+  --accent-soft: #e2f1ee;
+  --warn: #7a4b00;
+  --warn-soft: #fdf3dc;
+  --warn-line: #e9cf8f;
+  --danger: #a1261d;
+  --danger-soft: #fbe9e7;
+  --danger-line: #efb9b2;
+  --focus: #1d6fd6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #111614;
+    --surface: #18201d;
+    --surface-muted: #212b27;
+    --line: #34413b;
+    --ink: #e6ebe8;
+    --muted: #a6b3ad;
+    --accent: #6fd3c5;
+    --accent-hover: #93e0d5;
+    --on-accent: #062b26;
+    --accent-soft: #19332e;
+    --warn: #f3c66b;
+    --warn-soft: #2e2512;
+    --warn-line: #5e4a1f;
+    --danger: #ff9f95;
+    --danger-soft: #34191a;
+    --danger-line: #6b2f2c;
+    --focus: #7db4ff;
+  }
+}
+
+@theme inline {
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-on-accent: var(--on-accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-line);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-line);
+  --color-focus: var(--focus);
+}
+
+/* Page defaults. In the base layer so a utility class on an element (for
+   example an inset focus ring) wins over them: CSS outside a layer would beat
+   every Tailwind utility. */
+@layer base {
+  html,
+  body {
+    background-color: var(--page);
+    color: var(--ink);
+  }
+
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+}

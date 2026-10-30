@@ -61,9 +61,29 @@ mailboxes:
     # the folder you most likely meant.
     folder: Folders/Bills
 
+# The web page and API.
+web:
+  # The port OurHomeInbox listens on. In Docker this is inside the container;
+  # docker: port below is the one you open in your browser.
+  port: 8080
+
+# Reading the mailboxes.
+capture:
+  # How often each mailbox's folder is read, in minutes (1 to 1440). It is
+  # also read once right after OurHomeInbox starts.
+  every_minutes: 15
+
 # Docker settings. docker/deploy.sh hands these to Docker Compose; the app
 # itself does not use them.
 docker:
   # The Docker network OurHomeInbox joins. It must be the network your IMAP
   # server (the Proton Mail Bridge container) is on.
   network: ourhome_net
+
+  # The port on this computer for the web page: http://<this computer>:<port>
+  port: 8080
+
+  # Who can open the web page:
+  #   127.0.0.1  only this computer
+  #   0.0.0.0    any device on your network
+  bind: 127.0.0.1
