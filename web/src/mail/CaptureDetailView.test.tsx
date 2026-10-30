@@ -7,6 +7,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it } from "vitest";
 import type { BillerMatch, CaptureDetailResponse } from "../../../src/shared/api";
 import type { Capture } from "../../../src/shared/capture";
+import { extract } from "../../../src/server/extraction";
 import { CaptureDetailView } from "./CaptureDetailView";
 import { SafeEmailFrame } from "./SafeEmailFrame";
 
@@ -50,7 +51,8 @@ function makeCapture(overrides: Partial<Capture> = {}): Capture {
 }
 
 function detail(capture: Capture, biller: BillerMatch | null = null): CaptureDetailResponse {
-  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller };
+  // The server's own reader, so the picks match what the API would send.
+  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller, extraction: extract(capture) };
 }
 
 function openTab(name: string) {
@@ -116,6 +118,48 @@ describe("CaptureDetailView", () => {
     const panel = screen.getByRole("tabpanel");
     expect(panel.querySelector("iframe")).toBeNull();
     expect(panel.querySelector("pre")?.textContent).toBe("Amount due: $42.10\nDue: Nov 5");
+    // The picked-out amount and its label are marked in the text.
+    expect([...panel.querySelectorAll("pre mark")].map((m) => m.textContent)).toEqual(["Amount due", "$42.10"]);
+    fireEvent.click(within(panel).getByRole("checkbox", { name: "Mark the picked-out values" }));
+    expect(panel.querySelectorAll("pre mark")).toHaveLength(0);
+  });
+
+  it("says what was picked out, where, and marks it in the email", () => {
+    render(<CaptureDetailView detail={detail(makeCapture())} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    expect(picked.textContent).toContain("Bill");
+    expect(picked.textContent).toContain("It has an amount to pay.");
+    const rows = [...picked.querySelectorAll("dl > div")].map((row) => row.textContent);
+    expect(rows[0]).toContain("Amount$42.10");
+    expect(rows[0]).toContain('Found after "Amount due"');
+    // A bill is expected to have a due date; the email's "Due: Nov 5" has no year, so it is not one.
+    expect(rows[1]).toBe("Due dateNot found in this email");
+    expect([...picked.querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["Amount due", "$42.10"]);
+
+    const panel = screen.getByRole("tabpanel");
+    const srcdoc = () => panel.querySelector("iframe")?.getAttribute("srcdoc") ?? "";
+    expect(srcdoc()).toContain('<mark data-ohi-label="Amount">Amount due</mark>');
+    expect(srcdoc()).toContain('<mark data-ohi-value="Amount">$42.10</mark>');
+    fireEvent.click(within(panel).getByRole("checkbox", { name: "Mark the picked-out values" }));
+    expect(srcdoc()).not.toContain("<mark");
+  });
+
+  it("points out a reminder, a credit and a value the email disagrees with itself on", () => {
+    const html = "<p>Second Notice</p><p>Amount Due: ($5.00)</p><p>Due Date: 11/04/2026</p><p>Due Date: 11/05/2026</p>";
+    render(<CaptureDetailView detail={detail(makeCapture({ html, text: null }))} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    expect(picked.textContent).toContain('The email says "Second Notice".');
+    expect(picked.textContent).toContain("A reminder of a bill already sent.");
+    expect(picked.textContent).toContain("This is a credit: nothing is owed.");
+    expect(picked.textContent).toContain("This email gives more than one due date: Nov 4, 2026 and Nov 5, 2026.");
+  });
+
+  it("says when nothing was picked out", () => {
+    render(<CaptureDetailView detail={detail(makeCapture({ html: "<p>Hello</p>", text: null, subject: "Hi" }))} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    expect(picked.textContent).toContain("Statement");
+    expect(picked.textContent).toContain("Nothing was picked out of this email.");
+    expect(within(screen.getByRole("tabpanel")).queryByRole("checkbox")).toBeNull();
   });
 
   it("shows the text body, or says there is none", () => {

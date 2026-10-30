@@ -26,6 +26,7 @@
 
 import type { BillerKind } from "./billers.js";
 import type { Capture, CapturedAddress } from "./capture.js";
+import type { Extraction, ExtractionSummary } from "./extraction.js";
 
 export interface ApiError {
   error: string;
@@ -88,6 +89,8 @@ export interface CaptureListItem {
   hasHtml: boolean;
   /** The household's biller for this email's sender, or null when none matches. */
   biller: BillerMatch | null;
+  /** What the reader picked out of it, in short. */
+  picked: ExtractionSummary;
 }
 
 /** Which biller an email was matched to, and on which of its senders. */
@@ -109,6 +112,8 @@ export interface CaptureDetailResponse {
   mailboxSlug: string;
   capture: Capture;
   biller: BillerMatch | null;
+  /** What the reader picked out of it, and where each value was found. */
+  extraction: Extraction;
 }
 
 export interface SettingsMailbox {

@@ -1,5 +1,5 @@
-// One captured email: who sent it, its biller, when, and where it was found, then tabs
-// for each part of what was captured. Takes the API's reply directly, so it
+// One captured email: who sent it, its biller, when, and where it was found,
+// what the reader picked out of it, then tabs for each part of what was captured. Takes the API's reply directly, so it
 // can be shown (and tested) without fetching anything.
 
 import type { ReactNode } from "react";
@@ -9,6 +9,7 @@ import { DetailRow } from "../components/ui";
 import { Tabs, type TabItem } from "../components/Tabs";
 import { formatAddressList, formatDateTime, subjectDisplay } from "../format";
 import { AttachmentsPanel, EmailPanel, HeadersPanel, HtmlSourcePanel, LinksPanel, RawPanel, TextPanel } from "./CapturePanels";
+import { PickedOut } from "./PickedOut";
 
 function Addresses({ list }: { list: CapturedAddress[] }) {
   return list.length ? <>{formatAddressList(list)}</> : <span className="text-muted">None</span>;
@@ -16,10 +17,10 @@ function Addresses({ list }: { list: CapturedAddress[] }) {
 
 /** `actions` go under the email's details, for the page to add buttons that need its router. */
 export function CaptureDetailView({ detail, actions }: { detail: CaptureDetailResponse; actions?: ReactNode }) {
-  const { id, capture } = detail;
+  const { id, capture, extraction } = detail;
   const tabs: TabItem[] = [
-    { id: "email", label: "Email", render: () => <EmailPanel capture={capture} /> },
-    { id: "text", label: "Text", render: () => <TextPanel capture={capture} /> },
+    { id: "email", label: "Email", render: () => <EmailPanel capture={capture} extraction={extraction} /> },
+    { id: "text", label: "Text", render: () => <TextPanel capture={capture} extraction={extraction} /> },
     { id: "html", label: "HTML source", render: () => <HtmlSourcePanel capture={capture} /> },
     { id: "headers", label: "Headers", count: capture.headers.length, render: () => <HeadersPanel capture={capture} /> },
     {
@@ -80,6 +81,7 @@ export function CaptureDetailView({ detail, actions }: { detail: CaptureDetailRe
         </dl>
         {actions ? <div className="mt-3 flex flex-wrap gap-2 border-t border-line pt-3">{actions}</div> : null}
       </header>
+      <PickedOut extraction={extraction} />
       <Tabs items={tabs} label="Parts of this email" />
     </article>
   );

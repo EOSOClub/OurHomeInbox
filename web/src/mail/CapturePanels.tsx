@@ -3,10 +3,13 @@
 // Each takes the capture record and shows one part of it.
 
 import { Download, FileText, Paperclip } from "lucide-react";
+import { useId, useMemo, useState } from "react";
 import type { Capture } from "../../../src/shared/capture";
+import type { Extraction } from "../../../src/shared/extraction";
 import { captureAttachmentUrl, captureRawUrl } from "../api";
 import { buttonClasses, CopyButton, Notice } from "../components/ui";
 import { formatBytes, shortHash, subjectDisplay } from "../format";
+import { marksFor, textHighlights } from "./picked";
 import { SafeEmailFrame } from "./SafeEmailFrame";
 import { TextBlock } from "./TextBlock";
 
@@ -14,22 +17,48 @@ function Empty({ children }: { children: string }) {
   return <p className="py-4 text-muted">{children}</p>;
 }
 
-export function EmailPanel({ capture }: { capture: Capture }) {
-  if (capture.html) return <SafeEmailFrame html={capture.html} title={`Email: ${subjectDisplay(capture.subject)}`} />;
+/** The email as its sender made it, with the picked-out values marked (a box turns the marks off). */
+export function EmailPanel({ capture, extraction }: { capture: Capture; extraction?: Extraction }) {
+  const [showMarks, setShowMarks] = useState(true);
+  const checkboxId = useId();
+  const marks = useMemo(
+    () => (extraction?.source === "html" ? { pieces: extraction.pieces, marks: marksFor(extraction) } : undefined),
+    [extraction],
+  );
+  const highlights = useMemo(() => (capture.text && extraction ? textHighlights(capture.text, extraction) : []), [capture.text, extraction]);
+  const hasMarks = (marks?.marks.length ?? 0) > 0 || (!capture.html && highlights.length > 0);
+
+  const toggle = hasMarks ? (
+    <label htmlFor={checkboxId} className="inline-flex items-center gap-2 text-sm">
+      <input id={checkboxId} type="checkbox" checked={showMarks} onChange={(e) => setShowMarks(e.target.checked)} className="size-4 accent-accent" />
+      Mark the picked-out values
+    </label>
+  ) : null;
+
+  if (capture.html) {
+    return (
+      <div className="flex flex-col gap-3">
+        {toggle}
+        <SafeEmailFrame html={capture.html} title={`Email: ${subjectDisplay(capture.subject)}`} marks={showMarks ? marks : undefined} />
+      </div>
+    );
+  }
   if (capture.text) {
     return (
       <div className="flex flex-col gap-3">
         <p className="text-sm text-muted">This email has no HTML version, so its plain text is shown.</p>
-        <TextBlock text={capture.text} label="Email text" />
+        {toggle}
+        <TextBlock text={capture.text} highlights={showMarks ? highlights : undefined} label="Email text" />
       </div>
     );
   }
   return <Empty>This email has no body text.</Empty>;
 }
 
-export function TextPanel({ capture }: { capture: Capture }) {
+export function TextPanel({ capture, extraction }: { capture: Capture; extraction?: Extraction }) {
+  const highlights = useMemo(() => (capture.text && extraction ? textHighlights(capture.text, extraction) : []), [capture.text, extraction]);
   if (!capture.text) return <Empty>This email has no plain text part.</Empty>;
-  return <TextBlock text={capture.text} label="Plain text body" />;
+  return <TextBlock text={capture.text} highlights={highlights} label="Plain text body" />;
 }
 
 export function HtmlSourcePanel({ capture }: { capture: Capture }) {

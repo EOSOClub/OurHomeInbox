@@ -1,5 +1,5 @@
-// The list of captured mail, newest first, with each email's biller, a search
-// box, and buttons to show only emails with or without a biller (all in the
+// The list of captured mail, newest first, with each email's biller and what
+// the reader picked out of it, a search box, and buttons to show only emails with or without a biller (all in the
 // browser). Each row opens that email.
 
 import { Inbox, Link2, Paperclip, ReceiptText, Search } from "lucide-react";
@@ -10,6 +10,7 @@ import { capturePagePath } from "../api";
 import { ErrorState, LoadingState, PageTitle } from "../components/ui";
 import { formatDateTime, formatListDate, plural, senderDisplay, subjectDisplay } from "../format";
 import { captureDate, filterCaptures, type BillerFilter } from "../mail/captureList";
+import { KIND_LABELS, summaryLine } from "../mail/picked";
 import { useCaptures, useSettings } from "../queries";
 
 function Count({ icon, count, one, many }: { icon: ReactNode; count: number; one: string; many: string }) {
@@ -19,6 +20,18 @@ function Count({ icon, count, one, many }: { icon: ReactNode; count: number; one
       {count}
       <span className="sr-only">{count === 1 ? one : many}</span>
     </span>
+  );
+}
+
+/** The email's kind and what the reader picked out, such as "Bill  $4.13, due Nov 4, 2026". */
+function PickedLine({ picked }: { picked: CaptureListItem["picked"] }) {
+  const line = summaryLine(picked);
+  return (
+    <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+      <span className="rounded border border-line bg-surface-muted px-1.5 text-xs font-medium">{KIND_LABELS[picked.kind]}</span>
+      {line ? <span className="font-medium">{line}</span> : <span className="text-muted">Nothing picked out</span>}
+      {picked.needsCheck ? <span className="font-medium text-warn">Needs a check</span> : null}
+    </p>
   );
 }
 
@@ -37,6 +50,7 @@ function CaptureRow({ item }: { item: CaptureListItem }) {
           </time>
         </div>
         <p className="mt-0.5 truncate">{subjectDisplay(item.subject)}</p>
+        <PickedLine picked={item.picked} />
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
           {item.biller ? (
             <span className="inline-flex min-w-0 items-center gap-1 font-medium text-accent">

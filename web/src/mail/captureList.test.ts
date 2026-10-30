@@ -28,6 +28,7 @@ function item(
     hasText: true,
     hasHtml: false,
     biller,
+    picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, needsCheck: false },
   };
 }
 

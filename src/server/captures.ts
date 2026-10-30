@@ -5,7 +5,8 @@
 //   GET /api/captures/:mailbox/:uidValidity/:uid/attachments/:index   one attachment, as a download
 //
 // Each email carries the household's biller for its sender (see matching.ts),
-// worked out on every request so a biller change shows at once.
+// worked out on every request so a biller change shows at once, and what the
+// built-in reader picked out of it (see extraction.ts).
 //
 // Everything here came from strangers' email. It is sent as JSON or as a
 // download (never as a page), and nothing in it is used as a path except
@@ -19,9 +20,11 @@ import { mailboxSlug } from "../config.js";
 import { log } from "../log.js";
 import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse } from "../shared/api.js";
 import type { Capture } from "../shared/capture.js";
+import type { ExtractionSummary } from "../shared/extraction.js";
 import type { CaptureStore } from "../store.js";
 import { listBillers } from "./billers.js";
 import type { Database } from "./db.js";
+import { extract, summarize } from "./extraction.js";
 import { apiError, householdOf, type AppEnv } from "./http.js";
 import { BillerMatcher } from "./matching.js";
 
@@ -90,6 +93,29 @@ async function subfolders(dir: string, pattern: RegExp): Promise<string[]> {
   }
 }
 
+/**
+ * Remembers each email's summary, so the list does not read every email on
+ * every load. Keyed on the email's place and its fingerprint, so a changed
+ * file is read again. The reader is the same for every household; once
+ * biller rules exist, the key must include the rules that applied.
+ */
+class SummaryCache {
+  private readonly entries = new Map<string, ExtractionSummary>();
+
+  constructor(private readonly limit = 10_000) {}
+
+  get(id: string, capture: Capture): ExtractionSummary {
+    const key = `${id}|${capture.capturedAt}|${capture.raw?.sha256 ?? ""}`;
+    let summary = this.entries.get(key);
+    if (!summary) {
+      summary = summarize(extract(capture));
+      if (this.entries.size >= this.limit) this.entries.clear();
+      this.entries.set(key, summary);
+    }
+    return summary;
+  }
+}
+
 function listItem(
   slug: string,
   mailbox: MailboxConfig,
@@ -97,9 +123,11 @@ function listItem(
   uid: number,
   capture: Capture,
   matcher: BillerMatcher,
+  summaries: SummaryCache,
 ): CaptureListItem {
+  const id = `${slug}/${uidValidity}/${uid}`;
   return {
-    id: `${slug}/${uidValidity}/${uid}`,
+    id,
     mailbox: mailbox.name,
     mailboxSlug: slug,
     folder: typeof capture.folder === "string" ? capture.folder : mailbox.folder,
@@ -114,10 +142,11 @@ function listItem(
     hasText: capture.text !== null,
     hasHtml: capture.html !== null,
     biller: matcher.match(capture.from),
+    picked: summaries.get(id, capture),
   };
 }
 
-async function listCaptures(deps: CaptureDeps, matcher: BillerMatcher): Promise<CaptureListItem[]> {
+async function listCaptures(deps: CaptureDeps, matcher: BillerMatcher, summaries: SummaryCache): Promise<CaptureListItem[]> {
   const items: CaptureListItem[] = [];
   for (const [slug, mailbox] of householdMailboxes(deps.config)) {
     const mailboxDir = join(deps.store.root, slug);
@@ -128,7 +157,7 @@ async function listCaptures(deps: CaptureDeps, matcher: BillerMatcher): Promise<
         const dir = join(mailboxDir, uidValidity, uidName);
         try {
           const capture = await readCapture(dir);
-          if (capture) items.push(listItem(slug, mailbox, uidValidity, uid, capture, matcher));
+          if (capture) items.push(listItem(slug, mailbox, uidValidity, uid, capture, matcher, summaries));
         } catch (err) {
           log.warn(`Skipping ${join(dir, "capture.json")}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -210,9 +239,10 @@ export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
   const matcherFor = (c: Context<AppEnv>) => new BillerMatcher(listBillers(deps.db, householdOf(c)));
+  const summaries = new SummaryCache();
 
   app.get("/captures", async (c) => {
-    const body: CaptureListResponse = { captures: await listCaptures(deps, matcherFor(c)) };
+    const body: CaptureListResponse = { captures: await listCaptures(deps, matcherFor(c), summaries) };
     return c.json(body);
   });
 
@@ -224,6 +254,7 @@ export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
       mailboxSlug: found.slug,
       capture: found.capture,
       biller: matcherFor(c).match(found.capture.from),
+      extraction: extract(found.capture),
     };
     return c.json(body);
   });

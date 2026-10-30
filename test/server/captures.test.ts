@@ -62,6 +62,7 @@ describe("GET /api/captures", () => {
       hasText: true,
       hasHtml: false,
       biller: null,
+      picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, needsCheck: false },
     });
     expect(captures[0]).toMatchObject({ uid: 2, hasHtml: true, linkCount: 2, attachmentCount: 0 });
     expect(captures[1]).toMatchObject({ uid: 3, date: null, capturedAt: "2026-10-20T00:00:00.000Z" });
@@ -148,6 +149,23 @@ describe("GET /api/captures/:mailbox/:uidValidity/:uid", () => {
     expect(body.mailboxSlug).toBe("proton-bills");
     expect(body.capture).toMatchObject({ subject: "Power bill", uid: 2, html: expect.stringContaining("<a href") });
     expect(body.biller).toBeNull();
+    expect(body.extraction).toMatchObject({ source: "html", kind: "statement", fields: [] });
+  });
+
+  it("says what the reader picked out, in the list and on the email", async () => {
+    const html = "<table><tr><td>Amount Billed:</td><td>$4.13</td></tr><tr><td>Due Date:</td><td>11/04/2026</td></tr></table>";
+    await saveEmail(server.store, rawEmail({ subject: "Your bill is ready", html }), { uid: 7 });
+    const { captures } = await json<CaptureListResponse>(await get("/api/captures"));
+    expect(captures[0]!.picked).toEqual({ kind: "bill", amount: "4.13", dueDate: "2026-11-04", paidDate: null, needsCheck: false });
+
+    const { extraction } = await json<CaptureDetailResponse>(await get("/api/captures/proton-bills/1700000000/7"));
+    expect(extraction.source).toBe("html");
+    expect(extraction.pieces).toEqual(["Amount Billed:", "$4.13", "Due Date:", "11/04/2026"]);
+    expect([extraction.kind, extraction.kindReason]).toEqual(["bill", "It has an amount to pay."]);
+    expect(extraction.fields.map((f) => [f.field, f.values.map((v) => [v.value, v.shown, v.label]), f.by])).toEqual([
+      ["amount", [["4.13", "$4.13", "Amount Billed"]], "reader"],
+      ["dueDate", [["2026-11-04", "11/04/2026", "Due Date"]], "reader"],
+    ]);
   });
 
   it("answers 404 for a message that is not captured", async () => {

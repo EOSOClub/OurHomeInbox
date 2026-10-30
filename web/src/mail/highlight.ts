@@ -1,6 +1,6 @@
-// Splits a body's text into plain and highlighted pieces. Nothing highlights
-// yet; later, each value picked out of a bill (amount, due date, biller) will
-// pass its character range here so the text views can show where it came from.
+// Splits a body's text into plain and highlighted pieces, so the text views
+// can show where each value picked out of a bill came from, and the label
+// it was found by.
 
 export interface TextHighlight {
   /** Start offset in the text, inclusive. */
@@ -9,6 +9,8 @@ export interface TextHighlight {
   end: number;
   /** What was found there, shown on hover. */
   label?: string;
+  /** A picked value (the default) or the label it was found by, shown more lightly. */
+  tone?: "value" | "label";
 }
 
 export interface TextSegment {

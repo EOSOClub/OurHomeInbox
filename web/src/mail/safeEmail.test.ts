@@ -3,14 +3,35 @@
 // harmless, scripts dropped, and remote images detected.
 
 import { describe, expect, it } from "vitest";
+import { extract } from "../../../src/server/extraction";
+import { marksFor } from "./picked";
 import {
   buildSafeEmailDocument,
   EMAIL_CSP,
   hasRemoteImages,
   LINK_ADDRESS_ATTRIBUTE,
+  MARK_LABEL_ATTRIBUTE,
+  MARK_VALUE_ATTRIBUTE,
   prepareEmailHtml,
   renameEventHandlers,
+  renameStylesheetLinks,
 } from "./safeEmail";
+
+describe("renameStylesheetLinks", () => {
+  it("renames rel on link tags only, before the HTML is parsed", () => {
+    // WM's invoices carry links like this one, broken and blocked anyway.
+    const html = '<link href="font-family:" arial black; rel="stylesheet"><LINK REL=stylesheet href=x.css><p rel="x">rel=1</p>';
+    expect(renameStylesheetLinks(html)).toBe(
+      '<link href="font-family:" arial black; data-ohi-removed-rel="stylesheet"><LINK data-ohi-removed-rel=stylesheet href=x.css><p rel="x">rel=1</p>',
+    );
+  });
+
+  it("leaves no link in the frame's document", () => {
+    const result = prepareEmailHtml('<head><link rel="stylesheet" href="https://t.example/a.css"></head><p>Hi</p>');
+    expect(result.document).not.toMatch(/<link|a\.css|removed-rel/i);
+    expect(result.document).toContain("<p>Hi</p>");
+  });
+});
 
 describe("renameEventHandlers", () => {
   it("renames on* attributes inside tags before the HTML is parsed", () => {
@@ -55,7 +76,8 @@ describe("buildSafeEmailDocument", () => {
     const csp = doc.indexOf("Content-Security-Policy");
     expect(csp).toBeGreaterThan(0);
     expect(csp).toBeLessThan(doc.indexOf("p{color:red}"));
-    expect(csp).toBeLessThan(doc.indexOf("https://x.example/a.css"));
+    // The email's stylesheet link is gone altogether (see renameStylesheetLinks).
+    expect(doc).not.toContain("https://x.example/a.css");
     expect(doc).toMatch(/^<!doctype html><html lang="fr"><head><meta http-equiv="Content-Security-Policy"/);
   });
 
@@ -119,5 +141,60 @@ describe("remote image detection", () => {
     expect(result.remoteImages).toBe(true);
     expect(result.document).toContain("https://t.example/a.png");
     expect(result.document.indexOf("Content-Security-Policy")).toBeLessThan(result.document.indexOf("https://t.example/a.png"));
+  });
+});
+
+describe("marking picked-out values", () => {
+  /** The marks the server's reader would ask for in this HTML. */
+  function marksOf(html: string) {
+    const extraction = extract({ subject: "Bill", html, text: null });
+    return { pieces: extraction.pieces, marks: marksFor(extraction) };
+  }
+
+  it("marks each label and value, across the email's own elements, without changing its text", () => {
+    const html = "<table><tr><td>Amount   Billed:</td><td><b>$</b>4.13</td></tr><tr><td>Due Date: 11/04/2026</td></tr></table>";
+    const result = prepareEmailHtml(html, marksOf(html));
+    expect([result.marked, result.unmarked]).toEqual([4, 0]);
+    const doc = new DOMParser().parseFromString(result.document, "text/html");
+    const marks = [...doc.querySelectorAll("mark")].map((m) => [m.getAttribute(MARK_LABEL_ATTRIBUTE) ?? m.getAttribute(MARK_VALUE_ATTRIBUTE), m.textContent]);
+    expect(marks).toEqual([
+      ["Amount", "Amount   Billed"],
+      ["Amount", "$"],
+      ["Amount", "4.13"],
+      ["Due date", "Due Date"],
+      ["Due date", "11/04/2026"],
+    ]);
+    // The marks' style comes after everything of the email's; the email's text is unchanged.
+    const style = doc.body.lastElementChild;
+    expect(style?.tagName).toBe("STYLE");
+    style?.remove();
+    expect(doc.body.textContent).toBe("Amount   Billed:$4.13Due Date: 11/04/2026");
+  });
+
+  it("marks every copy of a repeated block", () => {
+    const block = "<table><tr><td>Invoice Amount</td><td>$49.28</td></tr></table>";
+    const html = block + block;
+    const doc = new DOMParser().parseFromString(prepareEmailHtml(html, marksOf(html)).document, "text/html");
+    expect([...doc.querySelectorAll(`mark[${MARK_VALUE_ATTRIBUTE}]`)].map((m) => m.textContent)).toEqual(["$49.28", "$49.28"]);
+  });
+
+  it("places no mark where its piece reads differently, and says so", () => {
+    const html = "<p>Amount Due: $10.00</p>";
+    const marks = marksOf(html);
+    const result = prepareEmailHtml(html, { pieces: ["Amount Due: $99.00"], marks: marks.marks });
+    expect([result.marked, result.unmarked]).toEqual([0, 2]);
+    expect(result.document).not.toContain("<mark");
+  });
+
+  it("removes marks the email brought itself, so none can be faked", () => {
+    const html = `<p><mark data-ohi-value="Amount">$1.00</mark> <span DATA-OHI-LABEL="x">hi</span></p>`;
+    const result = prepareEmailHtml(html);
+    expect(result.document).not.toMatch(/data-ohi-(value|label)/i);
+    expect(result.document).not.toContain("::after");
+  });
+
+  it("adds nothing when asked for no marks", () => {
+    const html = "<p>Amount Due: $10.00</p>";
+    expect(prepareEmailHtml(html, { pieces: ["Amount Due: $10.00"], marks: [] })).toEqual(prepareEmailHtml(html));
   });
 });
