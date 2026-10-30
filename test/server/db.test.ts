@@ -20,7 +20,7 @@ describe("openDatabase", () => {
     const db = openDatabase(join(dir, "nested", "app.db"));
     expect(db.schemaVersion).toBe(SCHEMA_VERSION);
     const tables = db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").map((t) => t.name);
-    expect(tables).toEqual(["households", "sessions", "users"]);
+    expect(tables).toEqual(["biller_senders", "billers", "households", "sessions", "users"]);
     expect(db.get<{ journal_mode: string }>("PRAGMA journal_mode")?.journal_mode).toBe("wal");
     expect(db.get<{ foreign_keys: number }>("PRAGMA foreign_keys")?.foreign_keys).toBe(1);
     db.close();

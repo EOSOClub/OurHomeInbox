@@ -2,6 +2,7 @@
 // for each part of what was captured. Takes the API's reply directly, so it
 // can be shown (and tested) without fetching anything.
 
+import type { ReactNode } from "react";
 import type { CaptureDetailResponse } from "../../../src/shared/api";
 import type { CapturedAddress } from "../../../src/shared/capture";
 import { DetailRow } from "../components/ui";
@@ -13,7 +14,8 @@ function Addresses({ list }: { list: CapturedAddress[] }) {
   return list.length ? <>{formatAddressList(list)}</> : <span className="text-muted">None</span>;
 }
 
-export function CaptureDetailView({ detail }: { detail: CaptureDetailResponse }) {
+/** `actions` go under the email's details, for the page to add buttons that need its router. */
+export function CaptureDetailView({ detail, actions }: { detail: CaptureDetailResponse; actions?: ReactNode }) {
   const { id, capture } = detail;
   const tabs: TabItem[] = [
     { id: "email", label: "Email", render: () => <EmailPanel capture={capture} /> },
@@ -66,6 +68,7 @@ export function CaptureDetailView({ detail }: { detail: CaptureDetailResponse })
             )}
           </DetailRow>
         </dl>
+        {actions ? <div className="mt-3 flex flex-wrap gap-2 border-t border-line pt-3">{actions}</div> : null}
       </header>
       <Tabs items={tabs} label="Parts of this email" />
     </article>

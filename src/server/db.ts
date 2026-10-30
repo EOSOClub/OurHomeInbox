@@ -1,7 +1,6 @@
-// The server's own database: households, accounts and sign-in sessions, in one
-// SQLite file next to the captured mail. Captured mail itself stays as files
-// (see store.ts); this holds only what the web app and API need to know who is
-// asking.
+// The server's own database: households, accounts, sign-in sessions and each
+// household's billers, in one SQLite file next to the captured mail. Captured
+// mail itself stays as files (see store.ts).
 //
 // The schema changes through MIGRATIONS only, in order, never edited once
 // released. PRAGMA user_version records how many have run.
@@ -41,6 +40,28 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX sessions_user ON sessions(user_id);
   CREATE INDEX sessions_expires ON sessions(expires_at);
+  `,
+  // Billers and the addresses their emails come from. A sender belongs to one
+  // biller per household, so an email never matches two.
+  `
+  CREATE TABLE billers (
+    id integer PRIMARY KEY,
+    household_id integer NOT NULL REFERENCES households(id),
+    name text NOT NULL,
+    kind text NOT NULL CHECK (kind IN ('bill', 'subscription')),
+    notes text NOT NULL DEFAULT '',
+    created_at text NOT NULL,
+    updated_at text NOT NULL
+  );
+  CREATE UNIQUE INDEX billers_household_name ON billers(household_id, name COLLATE NOCASE);
+  CREATE TABLE biller_senders (
+    biller_id integer NOT NULL REFERENCES billers(id) ON DELETE CASCADE,
+    household_id integer NOT NULL REFERENCES households(id),
+    sender text NOT NULL,
+    position integer NOT NULL,
+    PRIMARY KEY (biller_id, sender)
+  );
+  CREATE UNIQUE INDEX biller_senders_household ON biller_senders(household_id, sender);
   `,
 ];
 

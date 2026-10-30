@@ -5,6 +5,9 @@
 
 import type {
   ApiError,
+  Biller,
+  BillerInput,
+  BillerListResponse,
   CaptureDetailResponse,
   CaptureListResponse,
   LoginRequest,
@@ -111,4 +114,9 @@ export const api = {
   listCaptures: (signal?: AbortSignal) => request<CaptureListResponse>("GET", "/api/captures", { signal }),
   getCapture: (id: string, signal?: AbortSignal) => request<CaptureDetailResponse>("GET", captureApiPath(id), { signal }),
   getSettings: (signal?: AbortSignal) => request<SettingsResponse>("GET", "/api/settings", { signal }),
+  listBillers: (signal?: AbortSignal) => request<BillerListResponse>("GET", "/api/billers", { signal }),
+  getBiller: (id: number, signal?: AbortSignal) => request<Biller>("GET", `/api/billers/${id}`, { signal }),
+  createBiller: (body: BillerInput) => request<Biller>("POST", "/api/billers", { body }),
+  updateBiller: (id: number, body: BillerInput) => request<Biller>("PUT", `/api/billers/${id}`, { body }),
+  deleteBiller: (id: number) => request<void>("DELETE", `/api/billers/${id}`),
 };

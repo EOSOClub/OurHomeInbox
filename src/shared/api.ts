@@ -15,9 +15,16 @@
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/raw           the raw .eml, as a download
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/attachments/:index   one attachment (1-based), as a download
 //   GET    /api/settings                     SettingsResponse
+//   GET    /api/billers                      BillerListResponse
+//   POST   /api/billers                      BillerInput -> Biller (201)
+//   GET    /api/billers/:id                  Biller
+//   PUT    /api/billers/:id                  BillerInput -> Biller
+//   DELETE /api/billers/:id                  -> 204
 //
-// :mailbox is the mailbox's slug (CaptureListItem.mailboxSlug).
+// :mailbox is the mailbox's slug (CaptureListItem.mailboxSlug). Billers
+// belong to the signed-in person's household.
 
+import type { BillerKind } from "./billers.js";
 import type { Capture, CapturedAddress } from "./capture.js";
 
 export interface ApiError {
@@ -116,4 +123,28 @@ export interface SettingsResponse {
   web: { port: number };
   capture: { everyMinutes: number };
   mailboxes: SettingsMailbox[];
+}
+
+export interface Biller {
+  id: number;
+  name: string;
+  kind: BillerKind;
+  /** Addresses and domains its emails come from, as stored (see shared/billers.ts). */
+  senders: string[];
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Adding or changing a biller. Senders are normalized and repeats dropped; see shared/billers.ts for the rules. */
+export interface BillerInput {
+  name: string;
+  kind: BillerKind;
+  senders: string[];
+  notes?: string;
+}
+
+export interface BillerListResponse {
+  /** By name. */
+  billers: Biller[];
 }

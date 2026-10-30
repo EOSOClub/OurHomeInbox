@@ -10,6 +10,8 @@ export const queryKeys = {
   captures: ["captures"] as const,
   capture: (id: string) => ["captures", id] as const,
   settings: ["settings"] as const,
+  billers: ["billers"] as const,
+  biller: (id: number) => ["billers", id] as const,
 };
 
 export const SIGNED_OUT: SessionResponse = { user: null, setupNeeded: false };
@@ -47,4 +49,12 @@ export function useCapture(id: string) {
 
 export function useSettings(enabled = true) {
   return useQuery({ queryKey: queryKeys.settings, queryFn: ({ signal }) => api.getSettings(signal), enabled });
+}
+
+export function useBillers() {
+  return useQuery({ queryKey: queryKeys.billers, queryFn: ({ signal }) => api.listBillers(signal) });
+}
+
+export function useBiller(id: number) {
+  return useQuery({ queryKey: queryKeys.biller(id), queryFn: ({ signal }) => api.getBiller(id, signal) });
 }

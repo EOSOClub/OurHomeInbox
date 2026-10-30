@@ -2,7 +2,7 @@
 // signed in, a sign-out button, and the navigation.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Inbox, LogOut, Mail, Settings } from "lucide-react";
+import { Inbox, LogOut, Mail, ReceiptText, Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import type { SessionUser } from "../../../src/shared/api";
@@ -39,6 +39,7 @@ export function AppShell({ user, children }: { user: SessionUser; children: Reac
   });
 
   const onMail = pathname === "/" || pathname.startsWith("/mail/");
+  const onBillers = pathname === "/billers" || pathname.startsWith("/billers/");
 
   return (
     <div className="min-h-dvh">
@@ -66,6 +67,9 @@ export function AppShell({ user, children }: { user: SessionUser; children: Reac
           <nav aria-label="Main" className="flex gap-1">
             <NavItem to="/" active={onMail} icon={<Mail aria-hidden className="size-4" />}>
               Captured mail
+            </NavItem>
+            <NavItem to="/billers" active={onBillers} icon={<ReceiptText aria-hidden className="size-4" />}>
+              Billers
             </NavItem>
             <NavItem to="/settings" active={pathname === "/settings"} icon={<Settings aria-hidden className="size-4" />}>
               Settings

@@ -1,15 +1,23 @@
-// The small building blocks every page shares: buttons, text fields, cards,
-// notices, loading and error states, and a copy button.
+// The small building blocks every page shares: buttons, text fields, choices,
+// cards, notices, loading and error states, and a copy button.
 
 import { Check, CircleAlert, Copy, Info, LoaderCircle, TriangleAlert } from "lucide-react";
-import { useEffect, useId, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useState,
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type TextareaHTMLAttributes,
+} from "react";
 import { copyText } from "../clipboard";
 
 function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
 }
 
-type ButtonVariant = "primary" | "secondary" | "quiet";
+type ButtonVariant = "primary" | "secondary" | "quiet" | "danger";
 
 const BUTTON_BASE =
   "inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60";
@@ -18,6 +26,8 @@ const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
   primary: "bg-accent text-on-accent hover:bg-accent-hover",
   secondary: "border border-line bg-surface text-ink hover:bg-surface-muted",
   quiet: "text-muted hover:bg-surface-muted hover:text-ink",
+  // The page colour on the danger colour reads well in both light and dark.
+  danger: "bg-danger text-page hover:opacity-90",
 };
 
 export function buttonClasses(variant: ButtonVariant = "secondary", extra?: string): string {
@@ -77,6 +87,104 @@ export function TextField({ label, hint: givenHint, error, className, ...rest }:
         </p>
       ) : null}
     </div>
+  );
+}
+
+interface TextAreaFieldProps extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "id"> {
+  label: string;
+  hint?: string;
+  error?: string | null;
+}
+
+/** A multi-line TextField. */
+export function TextAreaField({ label, hint: givenHint, error, className, ...rest }: TextAreaFieldProps) {
+  const id = useId();
+  const hint = error ? undefined : givenHint;
+  const hintId = hint ? `${id}-hint` : undefined;
+  const errorId = error ? `${id}-error` : undefined;
+  const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
+  return (
+    <div className={cx("flex flex-col gap-1", className)}>
+      <label htmlFor={id} className="text-sm font-medium">
+        {label}
+      </label>
+      <textarea
+        id={id}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy}
+        className={cx(
+          "w-full rounded-md border bg-surface px-3 py-2 text-base text-ink placeholder:text-muted",
+          error ? "border-danger" : "border-line",
+        )}
+        {...rest}
+      />
+      {hint ? (
+        <p id={hintId} className="text-sm text-muted">
+          {hint}
+        </p>
+      ) : null}
+      {error ? (
+        <p id={errorId} className="text-sm text-danger">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export interface Choice<T extends string> {
+  value: T;
+  label: string;
+  description?: string;
+}
+
+/** One choice from a few, as radio buttons with a short explanation under each. */
+export function ChoiceField<T extends string>({
+  label,
+  choices,
+  value,
+  onChange,
+  error,
+}: {
+  label: string;
+  choices: ReadonlyArray<Choice<T>>;
+  value: T | null;
+  onChange: (value: T) => void;
+  error?: string | null;
+}) {
+  const name = useId();
+  const errorId = error ? `${name}-error` : undefined;
+  return (
+    <fieldset className="flex flex-col gap-2" aria-describedby={errorId}>
+      <legend className="mb-1 text-sm font-medium">{label}</legend>
+      {choices.map((choice) => (
+        <label
+          key={choice.value}
+          className={cx(
+            "flex cursor-pointer items-start gap-3 rounded-md border bg-surface px-3 py-2",
+            value === choice.value ? "border-accent" : error ? "border-danger" : "border-line",
+          )}
+        >
+          <input
+            type="radio"
+            name={name}
+            value={choice.value}
+            checked={value === choice.value}
+            onChange={() => onChange(choice.value)}
+            className="mt-1 accent-accent"
+          />
+          <span className="min-w-0">
+            <span className="block font-medium">{choice.label}</span>
+            {choice.description ? <span className="block text-sm text-muted">{choice.description}</span> : null}
+          </span>
+        </label>
+      ))}
+      {error ? (
+        <p id={errorId} className="text-sm text-danger">
+          {error}
+        </p>
+      ) : null}
+    </fieldset>
   );
 }
 

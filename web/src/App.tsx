@@ -6,6 +6,8 @@ import { Route, Routes } from "react-router";
 import { AppShell } from "./components/AppShell";
 import { AuthLayout } from "./components/AuthLayout";
 import { ErrorState, LoadingState } from "./components/ui";
+import { EditBillerPage, NewBillerPage } from "./pages/BillerEditPage";
+import { BillersPage } from "./pages/BillersPage";
 import { CaptureDetailPage } from "./pages/CaptureDetailPage";
 import { CaptureListPage } from "./pages/CaptureListPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -41,6 +43,9 @@ export function App() {
       <Routes>
         <Route path="/" element={<CaptureListPage />} />
         <Route path="/mail/:mailbox/:uidValidity/:uid" element={<CaptureDetailPage />} />
+        <Route path="/billers" element={<BillersPage />} />
+        <Route path="/billers/new" element={<NewBillerPage />} />
+        <Route path="/billers/:id" element={<EditBillerPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
