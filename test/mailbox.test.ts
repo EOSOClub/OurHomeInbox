@@ -65,6 +65,25 @@ describe("explainConnectError", () => {
     expect(explain({ tlsFailed: true })).toContain("could not switch to an encrypted connection");
   });
 
+  it("blames the certificate, not the server, when a STARTTLS upgrade fails on it", () => {
+    // What imapflow throws for the Proton Bridge reached by name with security: starttls.
+    const message = explain({ tlsFailed: true, code: "ERR_TLS_CERT_ALTNAME_INVALID" });
+    expect(message).toContain("certificate that cannot be trusted");
+    expect(message).not.toContain("could not switch");
+  });
+
+  it("explains the certificate in plain words, not Node's text", () => {
+    const message = explainConnectError(
+      mailbox,
+      Object.assign(new Error("self-signed certificate; try running Node.js with --use-system-ca"), {
+        code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+      }),
+      false,
+    ).message;
+    expect(message).toContain("it is self-signed");
+    expect(message).not.toContain("Node.js");
+  });
+
   it("says when tls was used on a port that is not encrypted", () => {
     expect(explain({ code: "ERR_SSL_WRONG_VERSION_NUMBER" })).toContain("tls is usually port 993");
   });

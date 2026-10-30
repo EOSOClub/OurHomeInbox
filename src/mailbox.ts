@@ -77,15 +77,15 @@ export function missingFolderMessage(folder: string, folders: string[]): string 
   return `There is no folder called "${folder}". Folders in this mailbox: ${[...folders].sort().join(", ")}`;
 }
 
-/** Node's codes for a certificate it will not trust. */
-const CERTIFICATE_ERROR_CODES = new Set([
-  "CERT_HAS_EXPIRED",
-  "CERT_NOT_YET_VALID",
-  "DEPTH_ZERO_SELF_SIGNED_CERT",
-  "SELF_SIGNED_CERT_IN_CHAIN",
-  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
-  "ERR_TLS_CERT_ALTNAME_INVALID",
+/** Node's codes for a certificate it will not trust, in plain words (Node's own text suggests Node flags). */
+const CERTIFICATE_PROBLEMS = new Map([
+  ["CERT_HAS_EXPIRED", "it has expired"],
+  ["CERT_NOT_YET_VALID", "it is not valid yet"],
+  ["DEPTH_ZERO_SELF_SIGNED_CERT", "it is self-signed"],
+  ["SELF_SIGNED_CERT_IN_CHAIN", "it is signed by an untrusted authority"],
+  ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "it is signed by an untrusted authority"],
+  ["UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "it is signed by an untrusted authority"],
+  ["ERR_TLS_CERT_ALTNAME_INVALID", "it is issued for a different name"],
 ]);
 
 /** Addresses that mean "this container" when OurHomeInbox runs in Docker. */
@@ -103,6 +103,18 @@ export function explainConnectError(mailbox: MailboxConfig, err: unknown, inDock
     );
   }
   const e = err as { code?: string; authenticationFailed?: boolean; tlsFailed?: boolean; message?: string };
+  // Before tlsFailed: imapflow marks a STARTTLS upgrade that failed on the
+  // certificate as tlsFailed too, keeping the certificate's error code.
+  const certificateProblem = e.code === undefined ? undefined : CERTIFICATE_PROBLEMS.get(e.code);
+  if (certificateProblem !== undefined) {
+    return new MailboxError(
+      `${where} has a certificate that cannot be trusted: ${certificateProblem} (security: ${imap.security}).` +
+        (mailbox.provider === "proton-bridge"
+          ? " Proton Mail Bridge's certificate is only valid for 127.0.0.1; reached by its Docker name, use security: none."
+          : ""),
+      { cause: err },
+    );
+  }
   if (e.tlsFailed) {
     return new MailboxError(
       `${where} could not switch to an encrypted connection (security: starttls). Check which security the server expects.`,
@@ -112,15 +124,6 @@ export function explainConnectError(mailbox: MailboxConfig, err: unknown, inDock
   if (e.code === "ERR_SSL_WRONG_VERSION_NUMBER") {
     return new MailboxError(
       `${where} did not answer with encryption (security: tls). This port probably expects none or starttls; tls is usually port 993.`,
-      { cause: err },
-    );
-  }
-  if (e.code !== undefined && CERTIFICATE_ERROR_CODES.has(e.code)) {
-    return new MailboxError(
-      `${where} has a certificate that cannot be trusted (${e.message ?? e.code}; security: ${imap.security}).` +
-        (mailbox.provider === "proton-bridge"
-          ? " Proton Mail Bridge's certificate is only valid for 127.0.0.1; reached by its Docker name, use security: none."
-          : ""),
       { cause: err },
     );
   }
