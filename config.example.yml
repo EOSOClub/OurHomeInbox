@@ -1,0 +1,41 @@
+# OurHomeInbox settings.
+#
+# Copy this file to config.yml (in this same folder) and change what you need.
+# Passwords and other secrets never go here: they go in .env (see .env.example).
+# A misspelt setting stops OurHomeInbox with a message naming it.
+
+# How much goes in the logs: debug, info, warn or error.
+log_level: info
+
+# The mailboxes to read bills from. Each one needs its own name.
+mailboxes:
+  - # Shown in the logs.
+    name: Proton bills
+
+    # How to connect. For now the only choice is proton-bridge: Proton Mail
+    # through Proton Mail Bridge, which needs a paid Proton plan.
+    provider: proton-bridge
+
+    # Only change these if your Bridge is not the one from OurHomeServices.
+    # Defaults for proton-bridge: host protonmail-bridge, port 143, tls false.
+    # host: protonmail-bridge
+    # port: 143
+    # tls: false
+
+    # The username the Bridge's "info" command prints (your Proton address).
+    username: you@proton.me
+
+    # The name of the line in .env that holds this mailbox's password.
+    password_env: PROTON_BRIDGE_PASSWORD
+
+    # The folder your bills are filtered into. Proton folders you make show up
+    # as "Folders/<name>", labels as "Labels/<name>". If the name is wrong,
+    # OurHomeInbox lists the folders it can see.
+    folder: Folders/Bills
+
+# Docker settings. docker/deploy.sh hands these to Docker Compose; the app
+# itself does not use them.
+docker:
+  # The Docker network shared with the Proton Bridge. ourhome_net is the one
+  # the proton-bridge stack in OurHomeServices uses.
+  network: ourhome_net

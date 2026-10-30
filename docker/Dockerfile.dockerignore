@@ -1,0 +1,8 @@
+# Allow list: only what the build needs. Everything else, including .env,
+# config.yml and captured mail, stays out of the image.
+*
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.build.json
+!src

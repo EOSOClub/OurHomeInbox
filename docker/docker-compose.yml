@@ -1,0 +1,51 @@
+# OurHomeInbox. Reads its two settings files from the repo root:
+#   .env        secrets, passed in as environment variables
+#   config.yml  everything else, mounted read-only
+#
+# Proton Mail is reached through the Proton Bridge stack in OurHomeServices,
+# over the shared Docker network (protonmail-bridge:143). Set that up first.
+#
+# Easiest: ./docker/deploy.sh. It creates both settings files on the first
+# run, walks through them, builds, and runs. It also hands config.yml's
+# docker: section (the network name) to compose through docker/.compose.env.
+#
+# By hand, from the repo root:
+#   copy .env.example to .env and config.example.yml to config.yml, fill them in
+#   docker network create ourhome_net        # skip if it already exists
+#   docker compose -f docker/docker-compose.yml up --build
+# (the network is then always ourhome_net)
+#
+# For now it checks each mailbox and exits, so it does not restart on its own.
+
+name: ourhome-inbox
+
+services:
+  ourhome-inbox:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ourhome/ourhome-inbox:dev
+    container_name: ourhome_inbox
+    restart: "no"
+    env_file:
+      # raw: values are passed exactly as written. Without it, compose reads
+      # a "$" in a password as a variable and silently changes the password.
+      - path: ../.env
+        required: true
+        format: raw
+    volumes:
+      # Long form so a missing config.yml is an error. The short form would
+      # quietly create an empty folder called config.yml instead.
+      - type: bind
+        source: ../config.yml
+        target: /app/config.yml
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - ourhome
+
+networks:
+  ourhome:
+    name: ${DOCKER_NETWORK:-ourhome_net}
+    external: true
