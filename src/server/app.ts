@@ -53,7 +53,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     return c.json(body);
   });
   app.route("/api", sessionRoutes({ db: deps.db, now }));
-  app.route("/api", captureRoutes({ config: deps.config, store: deps.store }));
+  app.route("/api", captureRoutes({ config: deps.config, store: deps.store, db: deps.db }));
   app.route("/api", settingsRoutes({ config: deps.config, configPath: deps.configPath }));
   app.route("/api", billerRoutes({ db: deps.db, now }));
   // Before the web app's catch-all, so an unknown API address is a JSON 404, never the app's page.

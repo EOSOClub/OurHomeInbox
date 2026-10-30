@@ -1,12 +1,14 @@
 // What the biller pages share: how each kind is described, the add/change
 // form's checks (the same rules the server applies), starting a biller from
-// an email, and how a biller's senders are summed up in one line.
+// an email or adding an email's sender to one, and how a biller's senders are
+// summed up in one line.
 
 import type { BillerInput } from "../../src/shared/api";
 import {
   MAX_BILLER_NAME,
   MAX_BILLER_NOTES,
   MAX_BILLER_SENDERS,
+  normalizeSender,
   parseSenders,
   senderProblem,
   type BillerKind,
@@ -69,6 +71,23 @@ export function newBillerPathFrom(from: readonly CapturedAddress[]): string | nu
   const address = sender.address.trim();
   const name = sender.name.trim() || address.slice(address.lastIndexOf("@") + 1);
   return `/billers/new?${new URLSearchParams({ name, sender: address }).toString()}`;
+}
+
+/**
+ * The page that changes biller `id` with an email's sender added to its list
+ * (saved only on Save). Null when the email has no From address.
+ */
+export function addSenderPathFrom(id: number, from: readonly CapturedAddress[]): string | null {
+  const sender = from.find((a) => a.address.trim() !== "");
+  if (!sender) return null;
+  return `/billers/${id}?${new URLSearchParams({ addSender: sender.address.trim() }).toString()}`;
+}
+
+/** The form's senders box for a saved biller, with `extra` added at the end unless it is already listed. */
+export function sendersWith(senders: readonly string[], extra: string | null): { text: string; added: string | null } {
+  const sender = extra === null ? "" : normalizeSender(extra);
+  const added = sender !== "" && !senders.includes(sender) ? sender : null;
+  return { text: (added ? [...senders, added] : senders).join("\n"), added };
 }
 
 /** "billing@a.example", "billing@a.example and b.example", "billing@a.example and 2 more". */

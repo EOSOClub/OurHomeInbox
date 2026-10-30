@@ -35,6 +35,12 @@ export function showSignedOut(client: QueryClient): void {
   client.setQueryData(queryKeys.session, SIGNED_OUT);
 }
 
+/** After a biller is added, changed or deleted: the biller list, and every email's matched biller. */
+export function refreshAfterBillerChange(client: QueryClient): void {
+  void client.invalidateQueries({ queryKey: queryKeys.billers, exact: true });
+  void client.invalidateQueries({ queryKey: queryKeys.captures });
+}
+
 export function useSession() {
   return useQuery({ queryKey: queryKeys.session, queryFn: ({ signal }) => api.getSession(signal) });
 }

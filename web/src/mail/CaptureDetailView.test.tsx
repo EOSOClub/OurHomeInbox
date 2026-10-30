@@ -5,7 +5,7 @@
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { CaptureDetailResponse } from "../../../src/shared/api";
+import type { BillerMatch, CaptureDetailResponse } from "../../../src/shared/api";
 import type { Capture } from "../../../src/shared/capture";
 import { CaptureDetailView } from "./CaptureDetailView";
 import { SafeEmailFrame } from "./SafeEmailFrame";
@@ -49,8 +49,8 @@ function makeCapture(overrides: Partial<Capture> = {}): Capture {
   };
 }
 
-function detail(capture: Capture): CaptureDetailResponse {
-  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture };
+function detail(capture: Capture, biller: BillerMatch | null = null): CaptureDetailResponse {
+  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller };
 }
 
 function openTab(name: string) {
@@ -69,6 +69,13 @@ describe("CaptureDetailView", () => {
     expect(text).toContain("Proton bills, folder Folders/Bills");
     expect(text).toContain("<abc@water.example>");
     expect(text).not.toContain("Cc");
+    expect(text).toContain("No biller matches this sender yet");
+  });
+
+  it("shows the matched biller and what it matched on", () => {
+    render(<CaptureDetailView detail={detail(makeCapture(), { id: 3, name: "City Water", kind: "bill", matchedOn: "water.example" })} />);
+    const text = document.querySelector("dl")?.textContent ?? "";
+    expect(text).toContain("BillerCity WaterMatched on water.example");
   });
 
   it("uses tab roles and moves with the arrow keys", () => {

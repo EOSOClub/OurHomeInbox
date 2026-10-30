@@ -34,6 +34,11 @@ export const MESSAGES = {
   server: "Something went wrong on the server. Please try again in a moment.",
 } as const;
 
+/** The signed-in person's household. Only for routes behind requireSignIn, which guarantees a user. */
+export function householdOf(c: Context<AppEnv>): number {
+  return (c.var.user as SessionUser).household.id;
+}
+
 /** Validates a JSON body with `schema`; a failure is a 400 with the first problem's message. */
 export function jsonBody<T extends z.ZodType>(schema: T) {
   return zValidator("json", schema, (result, c) => {

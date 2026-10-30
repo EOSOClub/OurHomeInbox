@@ -61,6 +61,7 @@ describe("GET /api/captures", () => {
       linkCount: 1,
       hasText: true,
       hasHtml: false,
+      biller: null,
     });
     expect(captures[0]).toMatchObject({ uid: 2, hasHtml: true, linkCount: 2, attachmentCount: 0 });
     expect(captures[1]).toMatchObject({ uid: 3, date: null, capturedAt: "2026-10-20T00:00:00.000Z" });
@@ -89,6 +90,53 @@ describe("GET /api/captures", () => {
   });
 });
 
+describe("billers on captured mail", () => {
+  async function addBiller(body: unknown): Promise<number> {
+    const res = await call(server.app, "/api/billers", { method: "POST", cookie, body });
+    if (res.status !== 201) throw new Error(`biller not added: ${res.status} ${await res.text()}`);
+    return ((await res.json()) as { id: number }).id;
+  }
+
+  it("shows each email's biller in the list and on the email, and follows changes at once", async () => {
+    await saveThree();
+    const id = await addBiller({ name: "Water Co", kind: "bill", senders: ["water.example"] });
+    const match = { id, name: "Water Co", kind: "bill", matchedOn: "water.example" };
+
+    const { captures } = await json<CaptureListResponse>(await get("/api/captures"));
+    expect(captures.map((c) => c.biller)).toEqual([match, match, match]);
+    expect((await json<CaptureDetailResponse>(await get("/api/captures/proton-bills/1700000000/2"))).biller).toEqual(match);
+
+    // A more specific sender on another biller takes over.
+    const billing = await addBiller({ name: "Water Billing", kind: "bill", senders: ["billing@water.example"] });
+    const after = await json<CaptureListResponse>(await get("/api/captures"));
+    expect(after.captures.map((c) => c.biller?.id)).toEqual([billing, billing, billing]);
+
+    await call(server.app, `/api/billers/${billing}`, { method: "DELETE", cookie });
+    await call(server.app, `/api/billers/${id}`, { method: "DELETE", cookie });
+    const none = await json<CaptureListResponse>(await get("/api/captures"));
+    expect(none.captures.map((c) => c.biller)).toEqual([null, null, null]);
+  });
+
+  it("uses only the signed-in household's billers", async () => {
+    await saveThree();
+    const stamp = "2026-10-29T00:00:00.000Z";
+    const household = server.db.run("INSERT INTO households (name, created_at) VALUES ('The Joneses', ?)", stamp).lastInsertRowid;
+    const theirs = server.db.run(
+      "INSERT INTO billers (household_id, name, kind, created_at, updated_at) VALUES (?, 'Their Water', 'bill', ?, ?)",
+      household,
+      stamp,
+      stamp,
+    ).lastInsertRowid;
+    server.db.run(
+      "INSERT INTO biller_senders (biller_id, household_id, sender, position) VALUES (?, ?, 'water.example', 0)",
+      theirs,
+      household,
+    );
+    const { captures } = await json<CaptureListResponse>(await get("/api/captures"));
+    expect(captures.map((c) => c.biller)).toEqual([null, null, null]);
+  });
+});
+
 describe("GET /api/captures/:mailbox/:uidValidity/:uid", () => {
   it("returns the whole capture record", async () => {
     await saveThree();
@@ -99,6 +147,7 @@ describe("GET /api/captures/:mailbox/:uidValidity/:uid", () => {
     expect(body.id).toBe("proton-bills/1700000000/2");
     expect(body.mailboxSlug).toBe("proton-bills");
     expect(body.capture).toMatchObject({ subject: "Power bill", uid: 2, html: expect.stringContaining("<a href") });
+    expect(body.biller).toBeNull();
   });
 
   it("answers 404 for a message that is not captured", async () => {

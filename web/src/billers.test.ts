@@ -1,7 +1,7 @@
 // Tests for the biller form's checks and the small helpers the biller pages use.
 
 import { describe, expect, it } from "vitest";
-import { checkBillerForm, newBillerPathFrom, sendersSummary, type BillerForm } from "./billers";
+import { addSenderPathFrom, checkBillerForm, newBillerPathFrom, sendersSummary, sendersWith, type BillerForm } from "./billers";
 
 const good: BillerForm = { name: " City Water ", kind: "bill", senders: "Billing@CityWater.example\n@citywater.example\n", notes: " " };
 
@@ -60,6 +60,29 @@ describe("newBillerPathFrom", () => {
   it("gives nothing when there is no address", () => {
     expect(newBillerPathFrom([])).toBeNull();
     expect(newBillerPathFrom([{ name: "Someone", address: "" }])).toBeNull();
+  });
+});
+
+describe("addSenderPathFrom", () => {
+  it("opens the biller with the sender to add", () => {
+    const path = addSenderPathFrom(7, [{ name: "City Water", address: " billing@citywater.example " }]);
+    expect(path).toBe("/billers/7?addSender=billing%40citywater.example");
+  });
+
+  it("gives nothing when there is no address", () => {
+    expect(addSenderPathFrom(7, [])).toBeNull();
+  });
+});
+
+describe("sendersWith", () => {
+  it("adds the sender at the end, cleaned up", () => {
+    expect(sendersWith(["a.example"], " Billing@B.example ")).toEqual({ text: "a.example\nbilling@b.example", added: "billing@b.example" });
+  });
+
+  it("adds nothing when it is already listed or missing", () => {
+    expect(sendersWith(["a.example"], "A.example")).toEqual({ text: "a.example", added: null });
+    expect(sendersWith(["a.example"], null)).toEqual({ text: "a.example", added: null });
+    expect(sendersWith([], "  ")).toEqual({ text: "", added: null });
   });
 });
 

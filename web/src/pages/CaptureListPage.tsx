@@ -1,14 +1,15 @@
-// The list of captured mail, newest first, with a search box that filters it
-// in the browser. Each row opens that email.
+// The list of captured mail, newest first, with each email's biller, a search
+// box, and buttons to show only emails with or without a biller (all in the
+// browser). Each row opens that email.
 
-import { Inbox, Link2, Paperclip, Search } from "lucide-react";
+import { Inbox, Link2, Paperclip, ReceiptText, Search } from "lucide-react";
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import type { CaptureListItem } from "../../../src/shared/api";
 import { capturePagePath } from "../api";
 import { ErrorState, LoadingState, PageTitle } from "../components/ui";
 import { formatDateTime, formatListDate, plural, senderDisplay, subjectDisplay } from "../format";
-import { captureDate, filterCaptures } from "../mail/captureList";
+import { captureDate, filterCaptures, type BillerFilter } from "../mail/captureList";
 import { useCaptures, useSettings } from "../queries";
 
 function Count({ icon, count, one, many }: { icon: ReactNode; count: number; one: string; many: string }) {
@@ -37,6 +38,18 @@ function CaptureRow({ item }: { item: CaptureListItem }) {
         </div>
         <p className="mt-0.5 truncate">{subjectDisplay(item.subject)}</p>
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
+          {item.biller ? (
+            <span className="inline-flex min-w-0 items-center gap-1 font-medium text-accent">
+              <ReceiptText aria-hidden className="size-3.5 shrink-0" />
+              <span className="sr-only">Biller: </span>
+              <span className="truncate">{item.biller.name}</span>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1">
+              <ReceiptText aria-hidden className="size-3.5 shrink-0 opacity-60" />
+              No biller
+            </span>
+          )}
           <span className="inline-flex min-w-0 items-center gap-1">
             <Inbox aria-hidden className="size-3.5 shrink-0" />
             <span className="truncate">{item.mailbox}</span>
@@ -61,12 +74,42 @@ function EmptyState() {
   );
 }
 
+const BILLER_FILTERS: ReadonlyArray<{ value: BillerFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "matched", label: "With a biller" },
+  { value: "unmatched", label: "No biller" },
+];
+
+/** All / With a biller / No biller, as a row of toggle buttons. */
+function BillerFilterButtons({ value, onChange }: { value: BillerFilter; onChange: (value: BillerFilter) => void }) {
+  return (
+    <div role="group" aria-label="Show" className="inline-flex rounded-md border border-line bg-surface p-0.5">
+      {BILLER_FILTERS.map((filter) => (
+        <button
+          key={filter.value}
+          type="button"
+          aria-pressed={value === filter.value}
+          onClick={() => onChange(filter.value)}
+          className={
+            "rounded px-3 py-1 text-sm font-medium " +
+            (value === filter.value ? "bg-accent-soft text-ink" : "text-muted hover:text-ink")
+          }
+        >
+          {filter.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function CaptureListPage() {
   const captures = useCaptures();
   const [query, setQuery] = useState("");
+  const [billerFilter, setBillerFilter] = useState<BillerFilter>("all");
   const searchId = useId();
   const all = captures.data?.captures;
-  const shown = useMemo(() => (all ? filterCaptures(all, query) : []), [all, query]);
+  const shown = useMemo(() => (all ? filterCaptures(all, query, billerFilter) : []), [all, query, billerFilter]);
+  const narrowed = query.trim() !== "" || billerFilter !== "all";
 
   return (
     <div>
@@ -86,15 +129,24 @@ export function CaptureListPage() {
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by subject, sender or mailbox"
+              placeholder="Search subject, sender, biller or mailbox"
               className="w-full rounded-md border border-line bg-surface py-2 pr-3 pl-9 text-base placeholder:text-muted"
             />
           </div>
-          <p role="status" className="mb-3 text-sm text-muted">
-            {query.trim() ? `Showing ${shown.length} of ${plural(all.length, "email", "emails")}` : plural(all.length, "email", "emails")}
-          </p>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p role="status" className="text-sm text-muted">
+              {narrowed ? `Showing ${shown.length} of ${plural(all.length, "email", "emails")}` : plural(all.length, "email", "emails")}
+            </p>
+            <BillerFilterButtons value={billerFilter} onChange={setBillerFilter} />
+          </div>
           {shown.length === 0 ? (
-            <p className="py-6 text-center text-muted">No captured mail matches "{query.trim()}".</p>
+            <p className="py-6 text-center text-muted">
+              {query.trim()
+                ? `No captured mail matches "${query.trim()}"${billerFilter === "all" ? "" : " here"}.`
+                : billerFilter === "matched"
+                  ? "No captured email has a biller yet."
+                  : "Every captured email has a biller."}
+            </p>
           ) : (
             <ul className="flex flex-col gap-2">
               {shown.map((item) => (

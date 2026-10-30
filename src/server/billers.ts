@@ -12,7 +12,7 @@
 
 import { Hono, type Context } from "hono";
 import { z } from "zod";
-import type { Biller, BillerListResponse, SessionUser } from "../shared/api.js";
+import type { Biller, BillerListResponse } from "../shared/api.js";
 import {
   BILLER_KINDS,
   MAX_BILLER_NAME,
@@ -23,7 +23,7 @@ import {
   type BillerKind,
 } from "../shared/billers.js";
 import type { Database } from "./db.js";
-import { apiError, jsonBody, MESSAGES, type AppEnv } from "./http.js";
+import { apiError, householdOf, jsonBody, MESSAGES, type AppEnv } from "./http.js";
 
 export interface BillerDeps {
   db: Database;
@@ -158,11 +158,6 @@ function billerId(c: Context): number | null {
   if (!ID.test(text)) return null;
   const id = Number(text);
   return Number.isSafeInteger(id) ? id : null;
-}
-
-/** Signed in is guaranteed by requireSignIn; this narrows the type. */
-function householdOf(c: Context<AppEnv>): number {
-  return (c.var.user as SessionUser).household.id;
 }
 
 export function billerRoutes(deps: BillerDeps): Hono<AppEnv> {

@@ -4,6 +4,9 @@
 //   GET /api/captures/:mailbox/:uidValidity/:uid/raw         its raw .eml, as a download
 //   GET /api/captures/:mailbox/:uidValidity/:uid/attachments/:index   one attachment, as a download
 //
+// Each email carries the household's biller for its sender (see matching.ts),
+// worked out on every request so a biller change shows at once.
+//
 // Everything here came from strangers' email. It is sent as JSON or as a
 // download (never as a page), and nothing in it is used as a path except
 // through checks that keep it inside the message's own folder.
@@ -17,11 +20,15 @@ import { log } from "../log.js";
 import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse } from "../shared/api.js";
 import type { Capture } from "../shared/capture.js";
 import type { CaptureStore } from "../store.js";
-import { apiError, type AppEnv } from "./http.js";
+import { listBillers } from "./billers.js";
+import type { Database } from "./db.js";
+import { apiError, householdOf, type AppEnv } from "./http.js";
+import { BillerMatcher } from "./matching.js";
 
 export interface CaptureDeps {
   config: Config;
   store: CaptureStore;
+  db: Database;
 }
 
 const NOT_FOUND = "That email was not found. It may be in a mailbox that is no longer set up.";
@@ -83,7 +90,14 @@ async function subfolders(dir: string, pattern: RegExp): Promise<string[]> {
   }
 }
 
-function listItem(slug: string, mailbox: MailboxConfig, uidValidity: string, uid: number, capture: Capture): CaptureListItem {
+function listItem(
+  slug: string,
+  mailbox: MailboxConfig,
+  uidValidity: string,
+  uid: number,
+  capture: Capture,
+  matcher: BillerMatcher,
+): CaptureListItem {
   return {
     id: `${slug}/${uidValidity}/${uid}`,
     mailbox: mailbox.name,
@@ -99,10 +113,11 @@ function listItem(slug: string, mailbox: MailboxConfig, uidValidity: string, uid
     linkCount: capture.links.length,
     hasText: capture.text !== null,
     hasHtml: capture.html !== null,
+    biller: matcher.match(capture.from),
   };
 }
 
-async function listCaptures(deps: CaptureDeps): Promise<CaptureListItem[]> {
+async function listCaptures(deps: CaptureDeps, matcher: BillerMatcher): Promise<CaptureListItem[]> {
   const items: CaptureListItem[] = [];
   for (const [slug, mailbox] of householdMailboxes(deps.config)) {
     const mailboxDir = join(deps.store.root, slug);
@@ -113,7 +128,7 @@ async function listCaptures(deps: CaptureDeps): Promise<CaptureListItem[]> {
         const dir = join(mailboxDir, uidValidity, uidName);
         try {
           const capture = await readCapture(dir);
-          if (capture) items.push(listItem(slug, mailbox, uidValidity, uid, capture));
+          if (capture) items.push(listItem(slug, mailbox, uidValidity, uid, capture, matcher));
         } catch (err) {
           log.warn(`Skipping ${join(dir, "capture.json")}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -194,8 +209,10 @@ function download(c: Context, content: Buffer, name: string): Response {
 export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
+  const matcherFor = (c: Context<AppEnv>) => new BillerMatcher(listBillers(deps.db, householdOf(c)));
+
   app.get("/captures", async (c) => {
-    const body: CaptureListResponse = { captures: await listCaptures(deps) };
+    const body: CaptureListResponse = { captures: await listCaptures(deps, matcherFor(c)) };
     return c.json(body);
   });
 
@@ -206,6 +223,7 @@ export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
       id: `${found.slug}/${found.uidValidity}/${found.uid}`,
       mailboxSlug: found.slug,
       capture: found.capture,
+      biller: matcherFor(c).match(found.capture.from),
     };
     return c.json(body);
   });

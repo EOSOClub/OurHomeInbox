@@ -1,4 +1,4 @@
-// One captured email: who sent it, when, and where it was found, then tabs
+// One captured email: who sent it, its biller, when, and where it was found, then tabs
 // for each part of what was captured. Takes the API's reply directly, so it
 // can be shown (and tested) without fetching anything.
 
@@ -39,6 +39,16 @@ export function CaptureDetailView({ detail, actions }: { detail: CaptureDetailRe
         <dl className="mt-3 divide-y divide-line">
           <DetailRow label="From">
             <Addresses list={capture.from} />
+          </DetailRow>
+          <DetailRow label="Biller">
+            {detail.biller ? (
+              <>
+                <span className="block font-medium">{detail.biller.name}</span>
+                <span className="block text-sm text-muted">Matched on {detail.biller.matchedOn}</span>
+              </>
+            ) : (
+              <span className="text-muted">No biller matches this sender yet</span>
+            )}
           </DetailRow>
           <DetailRow label="To">
             <Addresses list={capture.to} />

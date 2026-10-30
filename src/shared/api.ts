@@ -86,6 +86,17 @@ export interface CaptureListItem {
   linkCount: number;
   hasText: boolean;
   hasHtml: boolean;
+  /** The household's biller for this email's sender, or null when none matches. */
+  biller: BillerMatch | null;
+}
+
+/** Which biller an email was matched to, and on which of its senders. */
+export interface BillerMatch {
+  id: number;
+  name: string;
+  kind: BillerKind;
+  /** The biller's sender the email's From address matched: an address, or a domain covering it. */
+  matchedOn: string;
 }
 
 export interface CaptureListResponse {
@@ -97,6 +108,7 @@ export interface CaptureDetailResponse {
   id: string;
   mailboxSlug: string;
   capture: Capture;
+  biller: BillerMatch | null;
 }
 
 export interface SettingsMailbox {

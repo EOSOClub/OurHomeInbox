@@ -1,6 +1,7 @@
 // Adding a biller (/billers/new) or changing one (/billers/:id), with delete
 // on the change page. A new biller can be started from a captured email:
-// ?name=...&sender=... fill the form in, and nothing is saved until Save.
+// ?name=...&sender=... fill the form in; on the change page ?addSender=...
+// adds an email's sender to the list. Nothing is saved until Save.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
@@ -8,9 +9,9 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import type { Biller, BillerInput } from "../../../src/shared/api";
 import { api } from "../api";
-import { checkBillerForm, EMPTY_BILLER_FORM, KIND_CHOICES, type BillerForm, type BillerFormErrors } from "../billers";
+import { checkBillerForm, EMPTY_BILLER_FORM, KIND_CHOICES, sendersWith, type BillerForm, type BillerFormErrors } from "../billers";
 import { Button, buttonClasses, Card, ChoiceField, ErrorState, LoadingState, Notice, PageTitle, TextAreaField, TextField } from "../components/ui";
-import { queryKeys, useBiller } from "../queries";
+import { queryKeys, refreshAfterBillerChange, useBiller } from "../queries";
 import { NotFoundPage } from "./NotFoundPage";
 
 function BackLink() {
@@ -99,7 +100,7 @@ export function NewBillerPage() {
     mutationFn: api.createBiller,
     onSuccess: (biller) => {
       queryClient.setQueryData(queryKeys.biller(biller.id), biller);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.billers, exact: true });
+      refreshAfterBillerChange(queryClient);
       void navigate("/billers");
     },
   });
@@ -121,7 +122,7 @@ function DeleteBiller({ biller }: { biller: Biller }) {
     mutationFn: () => api.deleteBiller(biller.id),
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: queryKeys.biller(biller.id), exact: true });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.billers, exact: true });
+      refreshAfterBillerChange(queryClient);
       void navigate("/billers");
     },
   });
@@ -156,21 +157,28 @@ function DeleteBiller({ biller }: { biller: Biller }) {
   );
 }
 
-function EditBiller({ biller }: { biller: Biller }) {
+function EditBiller({ biller, addSender }: { biller: Biller; addSender: string | null }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const update = useMutation({
     mutationFn: (input: BillerInput) => api.updateBiller(biller.id, input),
     onSuccess: (saved) => {
       queryClient.setQueryData(queryKeys.biller(saved.id), saved);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.billers, exact: true });
+      refreshAfterBillerChange(queryClient);
       void navigate("/billers");
     },
   });
-  const initial: BillerForm = { name: biller.name, kind: biller.kind, senders: biller.senders.join("\n"), notes: biller.notes };
+  // Computed once, so the form keeps what was typed while it is open.
+  const [{ text, added }] = useState(() => sendersWith(biller.senders, addSender));
+  const initial: BillerForm = { name: biller.name, kind: biller.kind, senders: text, notes: biller.notes };
 
   return (
     <div className="flex flex-col gap-5">
+      {added ? (
+        <Notice tone="info">
+          <span className="wrap-anywhere">{added}</span> from the email is added to the list below. Save to keep it.
+        </Notice>
+      ) : null}
       <BillerFormCard initial={initial} submitLabel="Save changes" busy={update.isPending} error={update.error} onSubmit={(input) => update.mutate(input)} />
       <DeleteBiller biller={biller} />
     </div>
@@ -186,6 +194,8 @@ export function EditBillerPage() {
 
 function EditBillerLoaded({ id }: { id: number }) {
   const biller = useBiller(id);
+  const [params] = useSearchParams();
+  const addSender = params.get("addSender");
   return (
     <div>
       <BackLink />
@@ -193,7 +203,7 @@ function EditBillerLoaded({ id }: { id: number }) {
       {biller.isPending ? <LoadingState label="Loading this biller" /> : null}
       {biller.isError ? <ErrorState error={biller.error} onRetry={() => void biller.refetch()} /> : null}
       {/* Keyed on the saved version, so the form starts from what was loaded. */}
-      {biller.data ? <EditBiller key={biller.data.updatedAt} biller={biller.data} /> : null}
+      {biller.data ? <EditBiller key={biller.data.updatedAt} biller={biller.data} addSender={addSender} /> : null}
     </div>
   );
 }

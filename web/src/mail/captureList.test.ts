@@ -1,10 +1,17 @@
 // Tests for searching the captured-mail list.
 
 import { describe, expect, it } from "vitest";
-import type { CaptureListItem } from "../../../src/shared/api";
+import type { BillerMatch, CaptureListItem } from "../../../src/shared/api";
 import { captureDate, filterCaptures } from "./captureList";
 
-function item(id: string, subject: string | null, name: string, address: string, mailbox = "Proton bills"): CaptureListItem {
+function item(
+  id: string,
+  subject: string | null,
+  name: string,
+  address: string,
+  mailbox = "Proton bills",
+  biller: BillerMatch | null = null,
+): CaptureListItem {
   return {
     id,
     mailbox,
@@ -20,12 +27,15 @@ function item(id: string, subject: string | null, name: string, address: string,
     linkCount: 0,
     hasText: true,
     hasHtml: false,
+    biller,
   };
 }
 
+const ACME: BillerMatch = { id: 7, name: "Acme Utilities", kind: "bill", matchedOn: "power.example" };
+
 const items = [
   item("a", "Your water bill", "City Water", "bills@water.example"),
-  item("b", "Statement ready", "Power Co", "noreply@power.example", "Gmail bills"),
+  item("b", "Statement ready", "Power Co", "noreply@power.example", "Gmail bills", ACME),
   item("c", null, "", "someone@else.example"),
 ];
 
@@ -41,9 +51,19 @@ describe("filterCaptures", () => {
     expect(filterCaptures(items, "gmail").map((i) => i.id)).toEqual(["b"]);
   });
 
+  it("matches the biller's name", () => {
+    expect(filterCaptures(items, "acme").map((i) => i.id)).toEqual(["b"]);
+  });
+
   it("needs every word to match", () => {
     expect(filterCaptures(items, "bill water").map((i) => i.id)).toEqual(["a"]);
     expect(filterCaptures(items, "water power")).toEqual([]);
+  });
+
+  it("narrows to emails with a biller, or without one", () => {
+    expect(filterCaptures(items, "", "matched").map((i) => i.id)).toEqual(["b"]);
+    expect(filterCaptures(items, "", "unmatched").map((i) => i.id)).toEqual(["a", "c"]);
+    expect(filterCaptures(items, "water", "matched")).toEqual([]);
   });
 });
 
