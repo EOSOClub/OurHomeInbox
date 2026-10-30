@@ -33,7 +33,8 @@ const imapSchema = z
   .object({
     host: z.string().trim().min(1),
     port: z.number().int().min(1).max(65535),
-    security: z.enum(SECURITY_MODES),
+    // Any capitalization, since mail apps write it "STARTTLS" or "None".
+    security: z.preprocess((value) => (typeof value === "string" ? value.trim().toLowerCase() : value), z.enum(SECURITY_MODES)),
     username: z.string().trim().min(1),
     password_env: z
       .string()

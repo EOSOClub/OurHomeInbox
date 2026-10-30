@@ -25,12 +25,15 @@ mailboxes:
     # The IMAP connection. For Proton Mail Bridge, its "info" command prints
     # the IMAP username and password.
     imap:
-      # The IMAP server's address. For a Bridge container, its name on the
-      # Docker network.
+      # The IMAP server's address. In Docker:
+      #   a Bridge container        its name on the Docker network
+      #   the Bridge app on the     host.docker.internal (127.0.0.1 would be
+      #   computer running Docker   the OurHomeInbox container itself)
       host: protonmail-bridge
 
       # The IMAP port. Usually 143 for security none or starttls, and 993 for
-      # tls.
+      # tls. A Bridge container uses 143; the Bridge app uses 1143 (shown in
+      # its settings).
       port: 143
 
       # How the connection is protected:
@@ -39,10 +42,11 @@ mailboxes:
       #   starttls  Connects, then switches to encryption (STARTTLS). Stops
       #             with an error if the server cannot switch.
       #   tls       Encrypted from the start. Mail apps call this "SSL/TLS".
-      # Proton Mail Bridge in Docker: none. Its certificate is only valid for
-      # 127.0.0.1, so starttls and tls fail when it is reached by name. The
-      # connection stays inside Docker, and the Bridge talks to Proton
-      # encrypted.
+      # Any capitalization works (STARTTLS, starttls).
+      # Proton Mail Bridge reached from Docker: none. Its certificate is only
+      # valid for 127.0.0.1, so starttls and tls fail when it is reached by
+      # name (a container name or host.docker.internal). The connection never
+      # leaves the computer, and the Bridge talks to Proton encrypted.
       security: none
 
       # The IMAP username (for the Bridge, your Proton address).
@@ -52,8 +56,9 @@ mailboxes:
       password_env: PROTON_BRIDGE_PASSWORD
 
     # The IMAP folder your bills are filtered into. Proton folders you make
-    # show up as "Folders/<name>", labels as "Labels/<name>". If the name is
-    # wrong, OurHomeInbox lists the folders it can see.
+    # show up as "Folders/<name>" (a subfolder as "Folders/Parent/Name"),
+    # labels as "Labels/<name>". If the name is wrong, OurHomeInbox suggests
+    # the folder you most likely meant.
     folder: Folders/Bills
 
 # Docker settings. docker/deploy.sh hands these to Docker Compose; the app

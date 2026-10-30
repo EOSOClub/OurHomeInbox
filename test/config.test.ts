@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -69,6 +69,15 @@ describe("loadConfig", () => {
   it.each(["none", "starttls", "tls"])("accepts security: %s", (security) => {
     const yaml = PROTON.replace("security: none", `security: ${security}`);
     expect(loadConfig(setup(yaml, { PROTON_BRIDGE_PASSWORD: "x" })).mailboxes[0]?.imap.security).toBe(security);
+  });
+
+  it.each([
+    ["STARTTLS", "starttls"],
+    ["None", "none"],
+    [" TLS ", "tls"],
+  ])("accepts security: %s in any capitalization", (written, expected) => {
+    const yaml = PROTON.replace("security: none", `security: "${written}"`);
+    expect(loadConfig(setup(yaml, { PROTON_BRIDGE_PASSWORD: "x" })).mailboxes[0]?.imap.security).toBe(expected);
   });
 
   it("rejects a security mode it does not know", () => {
@@ -163,6 +172,16 @@ describe("loadConfig", () => {
   it("reports broken YAML as a settings problem", () => {
     const problems = problemsOf(() => loadConfig(setup("mailboxes: [\n")));
     expect(problems[0]).toContain("is not valid YAML");
+  });
+});
+
+describe(".env.example", () => {
+  // The repo is public: the template must never carry a real secret.
+  it("ships every secret empty", () => {
+    const filled = readFileSync(".env.example", "utf8")
+      .split(/\r?\n/)
+      .filter((line) => /^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*\S/.test(line));
+    expect(filled).toEqual([]);
   });
 });
 

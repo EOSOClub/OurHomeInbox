@@ -43,6 +43,10 @@ services:
         read_only: true
         bind:
           create_host_path: false
+    # host.docker.internal = the computer running Docker (for a Bridge app or
+    # mail server on it). Docker Desktop has it built in; this adds it on Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - ourhome
 

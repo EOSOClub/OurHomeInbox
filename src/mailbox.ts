@@ -2,6 +2,7 @@
 // Uses STATUS, which reads counts without opening the folder, so nothing is
 // marked read, moved or deleted.
 
+import { existsSync } from "node:fs";
 import { ImapFlow } from "imapflow";
 import type { MailboxConfig, Security } from "./config.js";
 
@@ -49,15 +50,31 @@ export async function checkMailbox(mailbox: MailboxConfig): Promise<MailboxStatu
   try {
     const status = await client.status(mailbox.folder, { messages: true, unseen: true }).catch(() => false as const);
     if (status === false) {
-      const folders = (await client.list()).map((folder) => folder.path).sort();
-      throw new MailboxError(
-        `There is no folder called "${mailbox.folder}". Folders in this mailbox: ${folders.join(", ")}`,
-      );
+      const folders = (await client.list()).map((folder) => folder.path);
+      throw new MailboxError(missingFolderMessage(mailbox.folder, folders));
     }
     return { messages: status.messages ?? 0, unseen: status.unseen ?? 0 };
   } finally {
     await client.logout().catch(() => undefined);
   }
+}
+
+/**
+ * Names the folder the setting most likely meant (same name, any
+ * capitalization, or the same path under a parent such as Proton's
+ * "Folders/"). Only when nothing is close does it list every folder, since
+ * that list can be long and personal.
+ */
+export function missingFolderMessage(folder: string, folders: string[]): string {
+  const wanted = folder.toLowerCase();
+  const close = folders.filter((path) => {
+    const candidate = path.toLowerCase();
+    return candidate === wanted || candidate.endsWith(`/${wanted}`);
+  });
+  if (close.length > 0) {
+    return `There is no folder called "${folder}". Did you mean ${close.map((path) => `"${path}"`).join(" or ")}?`;
+  }
+  return `There is no folder called "${folder}". Folders in this mailbox: ${[...folders].sort().join(", ")}`;
 }
 
 /** Node's codes for a certificate it will not trust. */
@@ -71,9 +88,20 @@ const CERTIFICATE_ERROR_CODES = new Set([
   "ERR_TLS_CERT_ALTNAME_INVALID",
 ]);
 
-export function explainConnectError(mailbox: MailboxConfig, err: unknown): MailboxError {
+/** Addresses that mean "this container" when OurHomeInbox runs in Docker. */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+export function explainConnectError(mailbox: MailboxConfig, err: unknown, inDocker = existsSync("/.dockerenv")): MailboxError {
   const { imap } = mailbox;
   const where = `${imap.host}:${imap.port}`;
+  if (inDocker && LOOPBACK_HOSTS.has(imap.host)) {
+    return new MailboxError(
+      `${imap.host} inside Docker is the OurHomeInbox container itself, not your computer. ` +
+        "For a mail server or Bridge app on the computer running Docker, use host: host.docker.internal; " +
+        "for one in another container, use that container's name.",
+      { cause: err },
+    );
+  }
   const e = err as { code?: string; authenticationFailed?: boolean; tlsFailed?: boolean; message?: string };
   if (e.tlsFailed) {
     return new MailboxError(

@@ -220,7 +220,9 @@ setup_wizard() {
   [ "$count" -gt 1 ] && info "This sets up the first mailbox; edit config.yml for the other $((count - 1))."
   printf '\n'
 
-  info "For a Bridge container, the IMAP server is its name on the Docker network."
+  info "IMAP server: a Bridge container's name on the Docker network, or"
+  info "host.docker.internal for the Bridge app on this computer (port 1143)."
+  info "Not 127.0.0.1: inside Docker that is the OurHomeInbox container itself."
   ask "IMAP server" "${host:-protonmail-bridge}"; new_host=$REPLY
 
   while true; do
@@ -396,8 +398,9 @@ fi
 if docker ps --filter "name=^${BRIDGE_CONTAINER}\$" --format '{{.Names}}' | grep -q .; then
   ok "Proton Bridge is running ($BRIDGE_CONTAINER)"
 else
-  warn "No running Proton Bridge ($BRIDGE_CONTAINER). The mailbox check will fail until"
-  warn "it runs on $NETWORK. Setup: $BRIDGE_DOCS"
+  info "No Bridge container ($BRIDGE_CONTAINER) is running. That is fine if your IMAP"
+  info "server is elsewhere, such as the Bridge app on this computer"
+  info "(host.docker.internal). Bridge container setup: $BRIDGE_DOCS"
 fi
 
 # --- Build -----------------------------------------------------------------
