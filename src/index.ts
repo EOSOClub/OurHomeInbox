@@ -1,9 +1,15 @@
-// Entry point. For now it loads the settings and checks that each mailbox can
-// be reached and its bills folder exists, then exits. Reading bills comes next.
+// Entry point. Loads the settings, then reads each mailbox's bills folder and
+// captures every message not captured before (see store.ts for where), then
+// exits. Watching the folder for new mail comes next.
 
+import { join, resolve } from "node:path";
 import { ConfigError, loadConfig, loadDotEnv, type Config } from "./config.js";
 import { log, setLogLevel } from "./log.js";
-import { checkMailbox } from "./mailbox.js";
+import { captureMailbox } from "./mailbox.js";
+import { CaptureStore } from "./store.js";
+
+/** Captured mail, relative to the folder OurHomeInbox runs in (/app/data in Docker). */
+const MAIL_DIR = join("data", "mail");
 
 async function main(): Promise<number> {
   log.info("OurHomeInbox starting: loading settings");
@@ -19,25 +25,37 @@ async function main(): Promise<number> {
     return 1;
   }
   setLogLevel(config.logLevel);
-  log.info(`Settings loaded: ${config.mailboxes.length} mailbox(es)`);
+  const store = new CaptureStore(MAIL_DIR);
+  log.info(`Settings loaded: ${config.mailboxes.length} mailbox(es); captured mail goes in ${resolve(store.root)}`);
 
-  let reachable = 0;
+  let mailboxesRead = 0;
+  let captured = 0;
+  let notCaptured = 0;
   for (const mailbox of config.mailboxes) {
     const { imap } = mailbox;
     log.info(
-      `Checking "${mailbox.name}": IMAP ${imap.username} at ${imap.host}:${imap.port} (security ${imap.security}), folder ${mailbox.folder}`,
+      `Reading "${mailbox.name}": IMAP ${imap.username} at ${imap.host}:${imap.port} (security ${imap.security}), folder ${mailbox.folder}`,
     );
     try {
-      const status = await checkMailbox(mailbox);
-      log.info(`"${mailbox.name}": ${status.messages} message(s), ${status.unseen} unread`);
-      reachable++;
+      const summary = await captureMailbox(mailbox, store);
+      mailboxesRead++;
+      captured += summary.captured;
+      notCaptured += summary.failed + summary.tooLarge;
+      log.info(
+        `"${mailbox.name}": ${summary.captured} captured now, ${summary.alreadyCaptured} captured before` +
+          (summary.failed > 0 ? `, ${summary.failed} failed` : "") +
+          (summary.tooLarge > 0 ? `, ${summary.tooLarge} too large` : ""),
+      );
     } catch (err) {
       log.error(`"${mailbox.name}": ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  log.info(`Done: ${reachable} of ${config.mailboxes.length} mailbox(es) reachable`);
-  return reachable === config.mailboxes.length ? 0 : 1;
+  log.info(
+    `Done: ${mailboxesRead} of ${config.mailboxes.length} mailbox(es) read, ${captured} message(s) captured` +
+      (notCaptured > 0 ? `, ${notCaptured} not captured` : ""),
+  );
+  return mailboxesRead === config.mailboxes.length && notCaptured === 0 ? 0 : 1;
 }
 
 process.exitCode = await main();

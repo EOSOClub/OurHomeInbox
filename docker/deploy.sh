@@ -13,8 +13,9 @@
 # reads config.yml's `docker:` section (with a pinned yq container, so nothing
 # needs installing) into .compose.env, which compose uses for the network.
 #
-# For now OurHomeInbox checks each mailbox and exits, so this runs it in the
-# foreground and reports the result.
+# For now OurHomeInbox reads each mailbox once, captures the messages it has
+# not captured before into the repo-root data/ folder, and exits, so this runs
+# it in the foreground and reports the result.
 #
 # Usage:  ./deploy.sh [-n] [-s|-y] [--no-build]
 
@@ -383,6 +384,16 @@ docker run --rm -i "$YQ_IMAGE" "$YQ_EXPR" < "$SETTINGS" > "$ENV_FILE" \
 NETWORK=$(env_get DOCKER_NETWORK || true); NETWORK=${NETWORK:-ourhome_net}
 ok "Compose values read ($(grep -c . "$ENV_FILE") from config.yml)"
 
+# Captured mail goes in the repo-root data/ folder. On Linux the container runs
+# as you, so you own what it writes; Docker Desktop handles that itself.
+mkdir -p ../data || fail "Could not create the data folder ($(cd .. && pwd)/data)."
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) ;;
+  *) printf 'DOCKER_UID=%s\nDOCKER_GID=%s\n' "$(id -u)" "$(id -g)" >> "$ENV_FILE" ;;
+esac
+DATA_DIR=$(cd ../data && pwd)
+ok "Captured mail goes in $DATA_DIR"
+
 # --- Network and Bridge ----------------------------------------------------
 step "Docker network and Proton Bridge"
 
@@ -419,15 +430,15 @@ else
 fi
 
 # --- Run -------------------------------------------------------------------
-step "Check mailboxes"
+step "Read mailboxes"
 "${DC[@]}" up --no-build --exit-code-from "$SERVICE"
 RC=$?
 
 step "Summary"
 if [ "$RC" = 0 ]; then
-  ok "Every mailbox was reached."
+  ok "Every mailbox was read. Captured mail: $DATA_DIR/mail"
 else
-  errln "Not every mailbox was reached (exit code $RC). The lines above say why."
+  errln "Not everything was read or captured (exit code $RC). The lines above say why."
   info "Fix it, then run ./deploy.sh again. To change settings: ./deploy.sh -s"
 fi
 exit "$RC"

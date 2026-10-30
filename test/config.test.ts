@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConfigError, loadConfig, loadDotEnv } from "../src/config.js";
+import { ConfigError, loadConfig, loadDotEnv, mailboxSlug } from "../src/config.js";
 
 let dir: string;
 
@@ -142,6 +142,21 @@ describe("loadConfig", () => {
     expect(problems[0]).toContain("each mailbox needs its own name");
   });
 
+  it("rejects mailbox names that would share a data folder", () => {
+    const second = PROTON.replace("mailboxes:\n", "").replace("name: Proton bills", "name: proton-bills!");
+    const problems = problemsOf(() =>
+      loadConfig(setup(`${PROTON}${second}`, { PROTON_BRIDGE_PASSWORD: "x" })),
+    );
+    expect(problems[0]).toContain("own data folder");
+  });
+
+  it("rejects a mailbox name with no letters or numbers", () => {
+    const problems = problemsOf(() =>
+      loadConfig(setup(PROTON.replace("name: Proton bills", 'name: "!!!"'), { PROTON_BRIDGE_PASSWORD: "x" })),
+    );
+    expect(problems[0]).toContain("at least one letter or number");
+  });
+
   it("rejects a file with no mailboxes", () => {
     const problems = problemsOf(() => loadConfig(setup("log_level: info\n")));
     expect(problems[0]).toContain("mailboxes");
@@ -172,6 +187,17 @@ describe("loadConfig", () => {
   it("reports broken YAML as a settings problem", () => {
     const problems = problemsOf(() => loadConfig(setup("mailboxes: [\n")));
     expect(problems[0]).toContain("is not valid YAML");
+  });
+});
+
+describe("mailboxSlug", () => {
+  it.each([
+    ["Proton bills", "proton-bills"],
+    ["  Électricité & Gas!  ", "electricite-gas"],
+    ["a/../b", "a-b"],
+    ["!!!", ""],
+  ])("%j becomes %j", (name, expected) => {
+    expect(mailboxSlug(name)).toBe(expected);
   });
 });
 

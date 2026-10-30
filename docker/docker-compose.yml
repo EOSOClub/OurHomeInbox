@@ -16,7 +16,8 @@
 #   docker compose -f docker/docker-compose.yml up --build
 # (the network is then always ourhome_net)
 #
-# For now it checks each mailbox and exits, so it does not restart on its own.
+# For now it reads each mailbox once, captures new messages into the repo's
+# data/ folder, and exits, so it does not restart on its own.
 
 name: ourhome-inbox
 
@@ -28,6 +29,9 @@ services:
     image: ourhome/ourhome-inbox:dev
     container_name: ourhome_inbox
     restart: "no"
+    # Runs as you (deploy.sh fills these in on Linux) so the captured mail in
+    # data/ belongs to you. Docker Desktop on Windows and macOS ignores this.
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     env_file:
       # raw: values are passed exactly as written. Without it, compose reads
       # a "$" in a password as a variable and silently changes the password.
@@ -43,6 +47,11 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # Captured mail: raw emails, attachments and what was read from them.
+      # Real, private mail; the repo's .gitignore keeps it out of git.
+      - type: bind
+        source: ../data
+        target: /app/data
     # host.docker.internal = the computer running Docker (for a Bridge app or
     # mail server on it). Docker Desktop has it built in; this adds it on Linux.
     extra_hosts:

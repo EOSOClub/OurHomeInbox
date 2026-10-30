@@ -57,7 +57,12 @@ const fileSchema = z
     mailboxes: z
       .array(mailboxSchema)
       .min(1, "add at least one mailbox")
-      .refine((list) => new Set(list.map((m) => m.name)).size === list.length, "each mailbox needs its own name"),
+      .refine((list) => new Set(list.map((m) => m.name)).size === list.length, "each mailbox needs its own name")
+      .refine((list) => list.every((m) => mailboxSlug(m.name) !== ""), "a mailbox name needs at least one letter or number")
+      .refine(
+        (list) => new Set(list.map((m) => mailboxSlug(m.name))).size === list.length,
+        "mailbox names must differ by more than capitals, spaces and punctuation, since each gets its own data folder",
+      ),
     // Read by docker/deploy.sh for Docker Compose, not by the app. Checked here
     // so a typo in it is caught the same way as anywhere else.
     docker: z
@@ -90,6 +95,17 @@ export interface MailboxConfig {
 export interface Config {
   logLevel: LogLevel;
   mailboxes: MailboxConfig[];
+}
+
+/** The folder name a mailbox's captured mail is kept under: "Proton bills" -> "proton-bills". */
+export function mailboxSlug(name: string): string {
+  return name
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "") // accents NFKD split off: "É" -> "E"
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
 }
 
 /** A settings problem the person running OurHomeInbox can fix. Each problem is one line. */

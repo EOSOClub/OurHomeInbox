@@ -1,14 +1,30 @@
-// Connects to a mailbox over IMAP and reports on its bills folder.
-// Uses STATUS, which reads counts without opening the folder, so nothing is
-// marked read, moved or deleted.
+// Connects to a mailbox over IMAP and captures every message in its bills
+// folder that is not captured yet. Read-only twice over: the folder is opened
+// with EXAMINE, in which the server refuses any change, and messages are
+// fetched with BODY.PEEK, which does not mark them read. Nothing is moved or
+// deleted.
 
 import { existsSync } from "node:fs";
 import { ImapFlow } from "imapflow";
+import { buildCapture } from "./capture.js";
 import type { MailboxConfig, Security } from "./config.js";
+import { log } from "./log.js";
+import type { CaptureStore } from "./store.js";
 
-export interface MailboxStatus {
-  messages: number;
-  unseen: number;
+/** Larger messages are skipped with a warning rather than read into memory. */
+export const MAX_MESSAGE_BYTES = 50 * 1024 * 1024;
+
+export interface CaptureSummary {
+  /** Messages in the folder. */
+  inFolder: number;
+  /** Captured on an earlier run. */
+  alreadyCaptured: number;
+  /** Captured on this run. */
+  captured: number;
+  /** Could not be captured; tried again next run. */
+  failed: number;
+  /** Over MAX_MESSAGE_BYTES; skipped. */
+  tooLarge: number;
 }
 
 /** A mailbox problem explained in plain words. */
@@ -30,7 +46,7 @@ export const SECURITY_OPTIONS: Record<Security, { secure: boolean; doSTARTTLS: b
   tls: { secure: true, doSTARTTLS: undefined },
 };
 
-export async function checkMailbox(mailbox: MailboxConfig): Promise<MailboxStatus> {
+async function connect(mailbox: MailboxConfig): Promise<ImapFlow> {
   const { imap } = mailbox;
   const client = new ImapFlow({
     host: imap.host,
@@ -40,23 +56,82 @@ export async function checkMailbox(mailbox: MailboxConfig): Promise<MailboxStatu
     logger: false,
     connectionTimeout: 15_000,
   });
-
   try {
     await client.connect();
   } catch (err) {
     throw explainConnectError(mailbox, err);
   }
+  return client;
+}
 
+/**
+ * Captures every message in the mailbox's folder that `store` does not have
+ * yet, one at a time, logging each. A message that fails is logged and left
+ * for the next run; the others still get captured.
+ */
+export async function captureMailbox(mailbox: MailboxConfig, store: CaptureStore): Promise<CaptureSummary> {
+  const client = await connect(mailbox);
   try {
-    const status = await client.status(mailbox.folder, { messages: true, unseen: true }).catch(() => false as const);
-    if (status === false) {
+    let uidValidity: string;
+    try {
+      // readOnly: EXAMINE, so the server itself refuses any change.
+      const opened = await client.mailboxOpen(mailbox.folder, { readOnly: true });
+      uidValidity = opened.uidValidity.toString();
+    } catch (err) {
       const folders = (await client.list()).map((folder) => folder.path);
-      throw new MailboxError(missingFolderMessage(mailbox.folder, folders));
+      if (folders.includes(mailbox.folder)) throw err;
+      throw new MailboxError(missingFolderMessage(mailbox.folder, folders), { cause: err });
     }
-    return { messages: status.messages ?? 0, unseen: status.unseen ?? 0 };
+
+    const summary: CaptureSummary = { inFolder: 0, alreadyCaptured: 0, captured: 0, failed: 0, tooLarge: 0 };
+    const listed = client.mailbox && client.mailbox.exists > 0 ? await client.fetchAll("1:*", { uid: true, size: true }) : [];
+    summary.inFolder = listed.length;
+    const pending = listed.filter((message) => !store.has(mailbox.name, uidValidity, message.uid));
+    summary.alreadyCaptured = listed.length - pending.length;
+    log.info(`"${mailbox.name}": ${summary.inFolder} message(s) in the folder, ${pending.length} not captured yet`);
+
+    for (const message of pending) {
+      if ((message.size ?? 0) > MAX_MESSAGE_BYTES) {
+        log.warn(`"${mailbox.name}": message ${message.uid} skipped: ${megabytes(message.size ?? 0)} is over the ${megabytes(MAX_MESSAGE_BYTES)} limit`);
+        summary.tooLarge++;
+        continue;
+      }
+      try {
+        const fetched = await client.fetchOne(String(message.uid), { uid: true, source: true }, { uid: true });
+        if (fetched === false || fetched.source === undefined) throw new Error("the server sent no content");
+        const result = await buildCapture(fetched.source, {
+          mailbox: mailbox.name,
+          folder: mailbox.folder,
+          uidValidity,
+          uid: message.uid,
+          capturedAt: new Date(),
+        });
+        await store.save(result, fetched.source);
+        const { capture } = result;
+        log.info(
+          `"${mailbox.name}": captured message ${message.uid}: ${quote(capture.subject)}, ` +
+            `${capture.attachments.length} attachment(s), ${capture.links.length} link(s)`,
+        );
+        summary.captured++;
+      } catch (err) {
+        log.error(`"${mailbox.name}": message ${message.uid} not captured, will try again next run: ${err instanceof Error ? err.message : String(err)}`);
+        summary.failed++;
+      }
+    }
+    return summary;
   } finally {
     await client.logout().catch(() => undefined);
   }
+}
+
+/** A subject for the log: quoted and escaped (it is a stranger's text), and short. */
+function quote(subject: string | null): string {
+  if (subject === null) return "(no subject)";
+  return JSON.stringify(subject.length > 80 ? `${subject.slice(0, 79)}…` : subject);
+}
+
+function megabytes(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /**

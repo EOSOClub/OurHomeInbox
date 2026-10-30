@@ -19,5 +19,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# Captured mail. docker-compose.yml mounts the repo's data/ folder here.
+RUN mkdir -p /app/data && chown node:node /app/data
 USER node
 CMD ["node", "dist/index.js"]
