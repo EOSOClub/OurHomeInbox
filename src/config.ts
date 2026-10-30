@@ -19,28 +19,33 @@ export const PROVIDERS = ["proton-bridge"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 /**
- * Connection values each provider fills in when config.yml leaves them out.
- * Proton Bridge: the name and port it has on the Docker network (see the
- * proton-bridge stack in OurHomeServices). Its certificate is issued for
- * 127.0.0.1 only, so TLS to that name always fails; the traffic stays inside
- * Docker, and the Bridge talks to Proton end-to-end encrypted.
+ * How an IMAP connection is protected:
+ *   none      no encryption at all
+ *   starttls  connects unencrypted, then must switch to encryption (STARTTLS)
+ *   tls       encrypted from the first byte ("SSL/TLS" in most mail apps)
  */
-const PROVIDER_DEFAULTS: Record<Provider, { host: string; port: number; tls: boolean }> = {
-  "proton-bridge": { host: "protonmail-bridge", port: 143, tls: false },
-};
+export const SECURITY_MODES = ["none", "starttls", "tls"] as const;
+export type Security = (typeof SECURITY_MODES)[number];
 
 // .strict() turns a misspelt setting into an error instead of silently ignoring it.
-const mailboxSchema = z
+// Every connection value is required: nothing about the connection is implied.
+const imapSchema = z
   .object({
-    name: z.string().trim().min(1),
-    provider: z.enum(PROVIDERS),
-    host: z.string().trim().min(1).optional(),
-    port: z.number().int().min(1).max(65535).optional(),
-    tls: z.boolean().optional(),
+    host: z.string().trim().min(1),
+    port: z.number().int().min(1).max(65535),
+    security: z.enum(SECURITY_MODES),
     username: z.string().trim().min(1),
     password_env: z
       .string()
       .regex(/^[A-Z][A-Z0-9_]*$/, "must be an .env name in capitals, like PROTON_BRIDGE_PASSWORD"),
+  })
+  .strict();
+
+const mailboxSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    provider: z.enum(PROVIDERS),
+    imap: imapSchema,
     folder: z.string().trim().min(1).default("INBOX"),
   })
   .strict();
@@ -66,14 +71,18 @@ const fileSchema = z
   })
   .strict();
 
+export interface ImapConfig {
+  host: string;
+  port: number;
+  security: Security;
+  username: string;
+  password: string;
+}
+
 export interface MailboxConfig {
   name: string;
   provider: Provider;
-  host: string;
-  port: number;
-  tls: boolean;
-  username: string;
-  password: string;
+  imap: ImapConfig;
   folder: string;
 }
 
@@ -101,7 +110,7 @@ export function loadDotEnv(path = ".env", env: NodeJS.ProcessEnv = process.env):
   }
 }
 
-/** Reads config.yml, checks it, and fills in each mailbox's password from the environment. */
+/** Reads config.yml, checks it, and fills in each mailbox's IMAP password from the environment. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const path = env.OURHOMEINBOX_CONFIG || DEFAULT_CONFIG_PATH;
   if (!existsSync(path)) {
@@ -123,19 +132,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const problems: string[] = [];
   const mailboxes = parsed.data.mailboxes.map((mailbox): MailboxConfig => {
-    const defaults = PROVIDER_DEFAULTS[mailbox.provider];
-    const password = env[mailbox.password_env] ?? "";
+    const { password_env, ...imap } = mailbox.imap;
+    const password = env[password_env] ?? "";
     if (password === "") {
-      problems.push(`${mailbox.password_env} is empty or missing in .env (the password for mailbox "${mailbox.name}").`);
+      problems.push(`${password_env} is empty or missing in .env (the IMAP password for mailbox "${mailbox.name}").`);
     }
     return {
       name: mailbox.name,
       provider: mailbox.provider,
-      host: mailbox.host ?? defaults.host,
-      port: mailbox.port ?? defaults.port,
-      tls: mailbox.tls ?? defaults.tls,
-      username: mailbox.username,
-      password,
+      imap: { ...imap, password },
       folder: mailbox.folder,
     };
   });

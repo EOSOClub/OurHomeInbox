@@ -23,7 +23,10 @@ async function main(): Promise<number> {
 
   let reachable = 0;
   for (const mailbox of config.mailboxes) {
-    log.info(`Checking "${mailbox.name}": ${mailbox.username} at ${mailbox.host}:${mailbox.port}, folder ${mailbox.folder}`);
+    const { imap } = mailbox;
+    log.info(
+      `Checking "${mailbox.name}": IMAP ${imap.username} at ${imap.host}:${imap.port} (security ${imap.security}), folder ${mailbox.folder}`,
+    );
     try {
       const status = await checkMailbox(mailbox);
       log.info(`"${mailbox.name}": ${status.messages} message(s), ${status.unseen} unread`);

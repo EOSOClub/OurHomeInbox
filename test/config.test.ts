@@ -25,8 +25,12 @@ const PROTON = `
 mailboxes:
   - name: Proton bills
     provider: proton-bridge
-    username: me@proton.me
-    password_env: PROTON_BRIDGE_PASSWORD
+    imap:
+      host: protonmail-bridge
+      port: 143
+      security: none
+      username: me@proton.me
+      password_env: PROTON_BRIDGE_PASSWORD
     folder: Folders/Bills
 `;
 
@@ -41,7 +45,7 @@ function problemsOf(fn: () => unknown): string[] {
 }
 
 describe("loadConfig", () => {
-  it("fills in the proton-bridge defaults and the password from the environment", () => {
+  it("reads the IMAP connection as written and the password from the environment", () => {
     const config = loadConfig(setup(PROTON, { PROTON_BRIDGE_PASSWORD: "bridge-pass" }));
     expect(config).toEqual({
       logLevel: "info",
@@ -49,21 +53,45 @@ describe("loadConfig", () => {
         {
           name: "Proton bills",
           provider: "proton-bridge",
-          host: "protonmail-bridge",
-          port: 143,
-          tls: false,
-          username: "me@proton.me",
-          password: "bridge-pass",
+          imap: {
+            host: "protonmail-bridge",
+            port: 143,
+            security: "none",
+            username: "me@proton.me",
+            password: "bridge-pass",
+          },
           folder: "Folders/Bills",
         },
       ],
     });
   });
 
-  it("keeps connection values that config.yml sets", () => {
-    const yaml = `${PROTON}    host: bridge.local\n    port: 1143\n    tls: true\n`;
-    const [mailbox] = loadConfig(setup(yaml, { PROTON_BRIDGE_PASSWORD: "x" })).mailboxes;
-    expect(mailbox).toMatchObject({ host: "bridge.local", port: 1143, tls: true });
+  it.each(["none", "starttls", "tls"])("accepts security: %s", (security) => {
+    const yaml = PROTON.replace("security: none", `security: ${security}`);
+    expect(loadConfig(setup(yaml, { PROTON_BRIDGE_PASSWORD: "x" })).mailboxes[0]?.imap.security).toBe(security);
+  });
+
+  it("rejects a security mode it does not know", () => {
+    const yaml = PROTON.replace("security: none", "security: ssl");
+    const problems = problemsOf(() => loadConfig(setup(yaml, { PROTON_BRIDGE_PASSWORD: "x" })));
+    expect(problems[0]).toContain("mailboxes[0].imap.security");
+  });
+
+  it.each(["host", "port", "security", "username", "password_env"])(
+    "requires imap %s: nothing about the connection is implied",
+    (key) => {
+      const yaml = PROTON.split("\n").filter((line) => !line.trim().startsWith(`${key}:`)).join("\n");
+      const problems = problemsOf(() => loadConfig(setup(yaml, { PROTON_BRIDGE_PASSWORD: "x" })));
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain(`mailboxes[0].imap.${key}`);
+    },
+  );
+
+  it("rejects connection settings outside the imap block", () => {
+    const problems = problemsOf(() =>
+      loadConfig(setup(`${PROTON}    host: elsewhere\n`, { PROTON_BRIDGE_PASSWORD: "x" })),
+    );
+    expect(problems[0]).toContain("host");
   });
 
   it("uses INBOX when no folder is given", () => {
@@ -79,7 +107,7 @@ describe("loadConfig", () => {
   it("names the .env line and the mailbox when a password is missing", () => {
     const problems = problemsOf(() => loadConfig(setup(PROTON)));
     expect(problems).toEqual([
-      'PROTON_BRIDGE_PASSWORD is empty or missing in .env (the password for mailbox "Proton bills").',
+      'PROTON_BRIDGE_PASSWORD is empty or missing in .env (the IMAP password for mailbox "Proton bills").',
     ]);
   });
 
@@ -125,7 +153,11 @@ describe("loadConfig", () => {
 
   it("accepts config.example.yml as shipped", () => {
     const config = loadConfig({ OURHOMEINBOX_CONFIG: "config.example.yml", PROTON_BRIDGE_PASSWORD: "x" });
-    expect(config.mailboxes[0]).toMatchObject({ provider: "proton-bridge", folder: "Folders/Bills" });
+    expect(config.mailboxes[0]).toMatchObject({
+      provider: "proton-bridge",
+      imap: { host: "protonmail-bridge", port: 143, security: "none" },
+      folder: "Folders/Bills",
+    });
   });
 
   it("reports broken YAML as a settings problem", () => {

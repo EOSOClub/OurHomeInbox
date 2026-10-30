@@ -178,26 +178,32 @@ ask_yn() {  # $1 question  $2 default y|n; returns 0 for yes
 # ---------------------------------------------------------------------------
 # Settings walkthrough
 # ---------------------------------------------------------------------------
-# Asks about the first mailbox in config.yml and the Docker network. Answers
-# are held until the end, so quitting part way (Ctrl+C) changes nothing, and
-# only what changed is written back.
+# Asks about the first mailbox in config.yml (its IMAP connection and folder)
+# and the Docker network. Answers are held until the end, so quitting part way
+# (Ctrl+C) changes nothing, and only what changed is written back.
 setup_wizard() {
-  local out line count=0 user="" folder="" pw_env="" net="" has_pw=0
-  local new_user new_pw new_folder new_net expr="" sep="" tmp args=()
+  local out line count=0 host="" port="" security="" user="" folder="" pw_env="" net="" has_pw=0
+  local new_host new_port new_security new_user new_pw new_folder new_net expr="" sep="" tmp args=()
 
   out=$(docker run --rm -i "$YQ_IMAGE" '"count=" + (.mailboxes // [] | length | tostring),
-      "user=" + ((.mailboxes[0].username // "") | tostring),
+      "host=" + ((.mailboxes[0].imap.host // "") | tostring),
+      "port=" + ((.mailboxes[0].imap.port // "") | tostring),
+      "security=" + ((.mailboxes[0].imap.security // "") | tostring),
+      "user=" + ((.mailboxes[0].imap.username // "") | tostring),
+      "pw_env=" + ((.mailboxes[0].imap.password_env // "") | tostring),
       "folder=" + ((.mailboxes[0].folder // "") | tostring),
-      "pw_env=" + ((.mailboxes[0].password_env // "") | tostring),
       "net=" + ((.docker.network // "") | tostring)' < "$SETTINGS") \
     || fail "Could not read config.yml - check it is valid YAML."
   while IFS= read -r line; do
     case "$line" in
-      count=*)  count=${line#*=} ;;
-      user=*)   user=${line#*=} ;;
-      folder=*) folder=${line#*=} ;;
-      pw_env=*) pw_env=${line#*=} ;;
-      net=*)    net=${line#*=} ;;
+      count=*)    count=${line#*=} ;;
+      host=*)     host=${line#*=} ;;
+      port=*)     port=${line#*=} ;;
+      security=*) security=${line#*=} ;;
+      user=*)     user=${line#*=} ;;
+      pw_env=*)   pw_env=${line#*=} ;;
+      folder=*)   folder=${line#*=} ;;
+      net=*)      net=${line#*=} ;;
     esac
   done <<< "$out"
   [ "$count" -gt 0 ] 2>/dev/null \
@@ -205,43 +211,75 @@ setup_wizard() {
   [ -n "$pw_env" ] || pw_env=PROTON_BRIDGE_PASSWORD
   [ -n "$(env_get "$pw_env" "$SECRETS" || true)" ] && has_pw=1
 
-  step "Proton Mail mailbox"
-  info "OurHomeInbox reads Proton Mail through Proton Mail Bridge, which the"
-  info "proton-bridge stack in OurHomeServices runs: $BRIDGE_DOCS"
-  info "The Bridge's \"info\" command prints the username and password asked for"
-  info "here. The password is made by the Bridge: it is not your Proton password."
+  step "Proton Mail mailbox: IMAP connection"
+  info "OurHomeInbox reads mail over IMAP (it never sends, so there is no SMTP)."
+  info "Proton Mail is read through Proton Mail Bridge. Its \"info\" command prints"
+  info "the IMAP username and password asked for here. The password is made by"
+  info "the Bridge: it is not your Proton password. No Bridge yet? OurHomeServices"
+  info "has one ready to run: $BRIDGE_DOCS"
   [ "$count" -gt 1 ] && info "This sets up the first mailbox; edit config.yml for the other $((count - 1))."
   printf '\n'
 
+  info "For a Bridge container, the IMAP server is its name on the Docker network."
+  ask "IMAP server" "${host:-protonmail-bridge}"; new_host=$REPLY
+
+  while true; do
+    ask "IMAP port" "${port:-143}"; new_port=$REPLY
+    [[ $new_port =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1 ] && [ "$new_port" -le 65535 ] && break
+    warn "A port is a number from 1 to 65535 (usually 143, or 993 for tls)."
+  done
+
+  info "Security: none (no encryption; only inside one machine or Docker network),"
+  info "starttls (connects, then switches to encryption), or tls (encrypted from"
+  info "the start, \"SSL/TLS\" in mail apps). Proton Mail Bridge in Docker: none,"
+  info "because its certificate is only valid for 127.0.0.1."
+  while true; do
+    ask "IMAP security (none, starttls or tls)" "${security:-none}"; new_security=$REPLY
+    case "$new_security" in none|starttls|tls) break ;; esac
+    warn "Type none, starttls or tls."
+  done
+
   [ "$user" = "$PLACEHOLDER_USER" ] && user=""
   while true; do
-    ask "Bridge username (your Proton address)" "$user"; new_user=$REPLY
-    case "$new_user" in *@*) break ;; esac
-    warn "That doesn't look like an email address."
+    ask "IMAP username (for the Bridge, your Proton address)" "$user"; new_user=$REPLY
+    [ -n "$new_user" ] && break
+    warn "The username is needed."
   done
 
   while true; do
-    ask_secret "Bridge password" "$has_pw"; new_pw=$REPLY
+    ask_secret "IMAP password" "$has_pw"; new_pw=$REPLY
     [ -n "$new_pw" ] || [ "$has_pw" = 1 ] && break
-    warn "The password is needed. Run the Bridge's \"info\" command to see it."
+    warn "The password is needed. For the Bridge, its \"info\" command shows it."
   done
 
   info "Proton folders show up as \"Folders/<name>\", labels as \"Labels/<name>\"."
-  ask "Folder your bills are filtered into" "${folder:-INBOX}"; new_folder=$REPLY
+  ask "IMAP folder your bills are filtered into" "${folder:-INBOX}"; new_folder=$REPLY
 
   step "Docker"
-  info "OurHomeInbox reaches the Bridge over a shared Docker network. The"
-  info "proton-bridge stack uses ourhome_net."
+  info "OurHomeInbox joins this Docker network. It must be the network your"
+  info "IMAP server (the Bridge container) is on."
   while true; do
     ask "Docker network" "${net:-ourhome_net}"; new_net=$REPLY
     [[ $new_net =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] && break
     warn "Use letters, numbers, dots, dashes and underscores only."
   done
 
-  # Only the keys that changed are rewritten.
+  # Only the keys that changed are rewritten. The port goes in as a number.
+  if [ "$new_host" != "$host" ]; then
+    export W_HOST=$new_host; args+=(-e W_HOST)
+    expr+="$sep.mailboxes[0].imap.host = strenv(W_HOST)"; sep=" | "
+  fi
+  if [ "$new_port" != "$port" ]; then
+    export W_PORT=$new_port; args+=(-e W_PORT)
+    expr+="$sep.mailboxes[0].imap.port = (strenv(W_PORT) | to_number)"; sep=" | "
+  fi
+  if [ "$new_security" != "$security" ]; then
+    export W_SECURITY=$new_security; args+=(-e W_SECURITY)
+    expr+="$sep.mailboxes[0].imap.security = strenv(W_SECURITY)"; sep=" | "
+  fi
   if [ "$new_user" != "$user" ]; then
     export W_USER=$new_user; args+=(-e W_USER)
-    expr+="$sep.mailboxes[0].username = strenv(W_USER)"; sep=" | "
+    expr+="$sep.mailboxes[0].imap.username = strenv(W_USER)"; sep=" | "
   fi
   if [ "$new_folder" != "$folder" ]; then
     export W_FOLDER=$new_folder; args+=(-e W_FOLDER)
@@ -271,7 +309,7 @@ setup_wizard() {
   fi
   if [ -n "$new_pw" ]; then
     env_put_file "$SECRETS" "$pw_env" "$new_pw" || fail "Could not save the password in .env."
-    ok "Saved the password in .env ($pw_env)"
+    ok "Saved the IMAP password in .env ($pw_env)"
   fi
 }
 

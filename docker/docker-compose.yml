@@ -2,8 +2,9 @@
 #   .env        secrets, passed in as environment variables
 #   config.yml  everything else, mounted read-only
 #
-# Proton Mail is reached through the Proton Bridge stack in OurHomeServices,
-# over the shared Docker network (protonmail-bridge:143). Set that up first.
+# Mail is read over IMAP from the server set in config.yml. For Proton Mail
+# that is a Proton Mail Bridge container on the same Docker network, which
+# must be running first.
 #
 # Easiest: ./docker/deploy.sh. It creates both settings files on the first
 # run, walks through them, builds, and runs. It also hands config.yml's

@@ -3,7 +3,7 @@
 // marked read, moved or deleted.
 
 import { ImapFlow } from "imapflow";
-import type { MailboxConfig } from "./config.js";
+import type { MailboxConfig, Security } from "./config.js";
 
 export interface MailboxStatus {
   messages: number;
@@ -18,15 +18,24 @@ export class MailboxError extends Error {
   }
 }
 
+/**
+ * imapflow options for each security mode. Each mode does exactly what it says:
+ * "none" never upgrades (even when the server offers STARTTLS), and "starttls"
+ * fails rather than carrying on unencrypted when the upgrade is not possible.
+ */
+export const SECURITY_OPTIONS: Record<Security, { secure: boolean; doSTARTTLS: boolean | undefined }> = {
+  none: { secure: false, doSTARTTLS: false },
+  starttls: { secure: false, doSTARTTLS: true },
+  tls: { secure: true, doSTARTTLS: undefined },
+};
+
 export async function checkMailbox(mailbox: MailboxConfig): Promise<MailboxStatus> {
+  const { imap } = mailbox;
   const client = new ImapFlow({
-    host: mailbox.host,
-    port: mailbox.port,
-    secure: mailbox.tls,
-    // With TLS off, never try STARTTLS: the Bridge offers it with a certificate
-    // that cannot match its Docker name, so the upgrade would always fail.
-    doSTARTTLS: mailbox.tls ? undefined : false,
-    auth: { user: mailbox.username, pass: mailbox.password },
+    host: imap.host,
+    port: imap.port,
+    ...SECURITY_OPTIONS[imap.security],
+    auth: { user: imap.username, pass: imap.password },
     logger: false,
     connectionTimeout: 15_000,
   });
@@ -51,9 +60,42 @@ export async function checkMailbox(mailbox: MailboxConfig): Promise<MailboxStatu
   }
 }
 
-function explainConnectError(mailbox: MailboxConfig, err: unknown): MailboxError {
-  const where = `${mailbox.host}:${mailbox.port}`;
-  const e = err as { code?: string; authenticationFailed?: boolean; message?: string };
+/** Node's codes for a certificate it will not trust. */
+const CERTIFICATE_ERROR_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+export function explainConnectError(mailbox: MailboxConfig, err: unknown): MailboxError {
+  const { imap } = mailbox;
+  const where = `${imap.host}:${imap.port}`;
+  const e = err as { code?: string; authenticationFailed?: boolean; tlsFailed?: boolean; message?: string };
+  if (e.tlsFailed) {
+    return new MailboxError(
+      `${where} could not switch to an encrypted connection (security: starttls). Check which security the server expects.`,
+      { cause: err },
+    );
+  }
+  if (e.code === "ERR_SSL_WRONG_VERSION_NUMBER") {
+    return new MailboxError(
+      `${where} did not answer with encryption (security: tls). This port probably expects none or starttls; tls is usually port 993.`,
+      { cause: err },
+    );
+  }
+  if (e.code !== undefined && CERTIFICATE_ERROR_CODES.has(e.code)) {
+    return new MailboxError(
+      `${where} has a certificate that cannot be trusted (${e.message ?? e.code}; security: ${imap.security}).` +
+        (mailbox.provider === "proton-bridge"
+          ? " Proton Mail Bridge's certificate is only valid for 127.0.0.1; reached by its Docker name, use security: none."
+          : ""),
+      { cause: err },
+    );
+  }
   if (e.authenticationFailed) {
     const hint =
       mailbox.provider === "proton-bridge"
@@ -63,7 +105,7 @@ function explainConnectError(mailbox: MailboxConfig, err: unknown): MailboxError
   }
   if (e.code === "ENOTFOUND" || e.code === "EAI_AGAIN") {
     return new MailboxError(
-      `Could not find ${mailbox.host}. Is it running, and on the same Docker network as OurHomeInbox?`,
+      `Could not find ${imap.host}. Is it running, and on the same Docker network as OurHomeInbox?`,
       { cause: err },
     );
   }

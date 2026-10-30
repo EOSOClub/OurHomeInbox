@@ -1,41 +1,64 @@
 # OurHomeInbox settings.
 #
-# Copy this file to config.yml (in this same folder) and change what you need.
-# Passwords and other secrets never go here: they go in .env (see .env.example).
-# A misspelt setting stops OurHomeInbox with a message naming it.
+# Copy this file to config.yml (in this same folder) and change what you need,
+# or let docker/deploy.sh do it for you. Passwords and other secrets never go
+# here: they go in .env (see .env.example). OurHomeInbox reads only this file
+# and its own .env. A misspelt or missing setting stops it with a message
+# naming it.
 
 # How much goes in the logs: debug, info, warn or error.
 log_level: info
 
 # The mailboxes to read bills from. Each one needs its own name.
+#
+# OurHomeInbox only reads mail, over IMAP. It never sends mail, so there are
+# no SMTP settings.
 mailboxes:
   - # Shown in the logs.
     name: Proton bills
 
-    # How to connect. For now the only choice is proton-bridge: Proton Mail
-    # through Proton Mail Bridge, which needs a paid Proton plan.
+    # The kind of mailbox, used for setup help and error hints. For now the
+    # only choice is proton-bridge: Proton Mail through Proton Mail Bridge
+    # (needs a paid Proton plan).
     provider: proton-bridge
 
-    # Only change these if your Bridge is not the one from OurHomeServices.
-    # Defaults for proton-bridge: host protonmail-bridge, port 143, tls false.
-    # host: protonmail-bridge
-    # port: 143
-    # tls: false
+    # The IMAP connection. For Proton Mail Bridge, its "info" command prints
+    # the IMAP username and password.
+    imap:
+      # The IMAP server's address. For a Bridge container, its name on the
+      # Docker network.
+      host: protonmail-bridge
 
-    # The username the Bridge's "info" command prints (your Proton address).
-    username: you@proton.me
+      # The IMAP port. Usually 143 for security none or starttls, and 993 for
+      # tls.
+      port: 143
 
-    # The name of the line in .env that holds this mailbox's password.
-    password_env: PROTON_BRIDGE_PASSWORD
+      # How the connection is protected:
+      #   none      No encryption. Only for a server on the same machine or
+      #             Docker network, never across the internet.
+      #   starttls  Connects, then switches to encryption (STARTTLS). Stops
+      #             with an error if the server cannot switch.
+      #   tls       Encrypted from the start. Mail apps call this "SSL/TLS".
+      # Proton Mail Bridge in Docker: none. Its certificate is only valid for
+      # 127.0.0.1, so starttls and tls fail when it is reached by name. The
+      # connection stays inside Docker, and the Bridge talks to Proton
+      # encrypted.
+      security: none
 
-    # The folder your bills are filtered into. Proton folders you make show up
-    # as "Folders/<name>", labels as "Labels/<name>". If the name is wrong,
-    # OurHomeInbox lists the folders it can see.
+      # The IMAP username (for the Bridge, your Proton address).
+      username: you@proton.me
+
+      # The name of the line in .env that holds the IMAP password.
+      password_env: PROTON_BRIDGE_PASSWORD
+
+    # The IMAP folder your bills are filtered into. Proton folders you make
+    # show up as "Folders/<name>", labels as "Labels/<name>". If the name is
+    # wrong, OurHomeInbox lists the folders it can see.
     folder: Folders/Bills
 
 # Docker settings. docker/deploy.sh hands these to Docker Compose; the app
 # itself does not use them.
 docker:
-  # The Docker network shared with the Proton Bridge. ourhome_net is the one
-  # the proton-bridge stack in OurHomeServices uses.
+  # The Docker network OurHomeInbox joins. It must be the network your IMAP
+  # server (the Proton Mail Bridge container) is on.
   network: ourhome_net
