@@ -59,11 +59,15 @@ export function isCredit(field: PickedField | undefined): boolean {
   return field?.field === "amount" && field.values.length === 1 && Number(field.values[0]!.value) < 0;
 }
 
-/** The short line under an email in the list, such as "$4.13, due Nov 4, 2026". Empty when nothing was found. */
+/**
+ * The short line under an email in the list, such as "$4.13, due Nov 4, 2026",
+ * or "due now (past due)" when it says the account is past due. Empty when nothing was found.
+ */
 export function summaryLine(summary: ExtractionSummary, locale?: string): string {
   const parts: string[] = [];
   if (summary.amount !== null) parts.push(formatMoney(summary.amount));
-  if (summary.dueDate !== null) parts.push(`due ${formatDay(summary.dueDate, locale)}`);
+  if (summary.dueNow) parts.push("due now (past due)");
+  else if (summary.dueDate !== null) parts.push(`due ${formatDay(summary.dueDate, locale)}`);
   if (summary.paidDate !== null) parts.push(`paid ${formatDay(summary.paidDate, locale)}`);
   return parts.join(", ");
 }
@@ -78,10 +82,14 @@ export interface PieceMark {
   name: string;
 }
 
-/** Marks for every place each picked value was found, labels and values both. */
-export function marksFor(extraction: Extraction): PieceMark[] {
+/**
+ * Marks for every place each picked value was found, labels and values both,
+ * in the email's body, or (with `from` "invoice") in its invoice.
+ */
+export function marksFor(extraction: Extraction, from: PickedField["from"] = "email"): PieceMark[] {
   const marks: PieceMark[] = [];
   for (const field of extraction.fields) {
+    if (field.from !== from) continue;
     const name = FIELD_LABELS[field.field];
     for (const value of field.values) {
       for (const spot of value.spots) {
@@ -90,6 +98,8 @@ export function marksFor(extraction: Extraction): PieceMark[] {
       }
     }
   }
+  const pastDue = extraction.dueNow;
+  if (pastDue?.from === from) marks.push({ piece: pastDue.piece, start: pastDue.start, end: pastDue.end, role: "value", name: "Past due" });
   return marks;
 }
 
@@ -106,6 +116,32 @@ export function textHighlights(text: string, extraction: Extraction): TextHighli
       .locate(mark.piece, mark.start, mark.end)
       .map((range) => ({ start: range.start, end: range.end, label: mark.name, tone: mark.role }));
   });
+}
+
+/**
+ * An invoice's text laid out as it is on the page (a line per line, cells
+ * apart, a heading per page), with every value picked from it marked.
+ */
+export function invoiceLayout(extraction: Extraction): { text: string; highlights: TextHighlight[] } {
+  const invoice = extraction.invoice;
+  if (!invoice) return { text: "", highlights: [] };
+  const starts: number[] = [];
+  let text = "";
+  invoice.pieces.forEach((piece, index) => {
+    const place = invoice.places[index]!;
+    const previous = index > 0 ? invoice.places[index - 1]! : null;
+    if (!previous || previous.page !== place.page) text += `${previous ? "\n\n" : ""}Page ${place.page}\n`;
+    else text += previous.line === place.line ? "    " : "\n";
+    starts.push(text.length);
+    text += piece;
+  });
+  const highlights = marksFor(extraction, "invoice").map((mark) => ({
+    start: starts[mark.piece]! + mark.start,
+    end: starts[mark.piece]! + mark.end,
+    label: mark.name,
+    tone: mark.role,
+  }));
+  return { text, highlights };
 }
 
 /** A piece shortened to about `room` characters around [start, end), with an ellipsis where text was cut. */

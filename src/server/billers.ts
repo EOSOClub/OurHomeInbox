@@ -30,7 +30,7 @@ export interface BillerDeps {
   now: () => Date;
 }
 
-const NOT_FOUND = "That biller was not found. It may have been deleted.";
+export const NOT_FOUND = "That biller was not found. It may have been deleted.";
 const ID = /^[1-9]\d*$/;
 
 const billerSchema = z.object(
@@ -62,6 +62,7 @@ const billerSchema = z.object(
       .trim()
       .max(MAX_BILLER_NOTES, `Keep the notes under ${MAX_BILLER_NOTES} characters.`)
       .default(""),
+    fetchInvoices: z.boolean({ error: MESSAGES.badShape }).default(true),
   },
   { error: MESSAGES.badShape },
 );
@@ -73,6 +74,7 @@ interface BillerRow {
   name: string;
   kind: BillerKind;
   notes: string;
+  fetch_invoices: number;
   created_at: string;
   updated_at: string;
 }
@@ -84,12 +86,13 @@ function toBiller(row: BillerRow, senders: string[]): Biller {
     kind: row.kind,
     senders,
     notes: row.notes,
+    fetchInvoices: row.fetch_invoices !== 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-const BILLER_COLUMNS = "id, name, kind, notes, created_at, updated_at";
+const BILLER_COLUMNS = "id, name, kind, notes, fetch_invoices, created_at, updated_at";
 
 export function listBillers(db: Database, householdId: number): Biller[] {
   const rows = db.all<BillerRow>(
@@ -153,7 +156,7 @@ function writeSenders(db: Database, householdId: number, billerId: number, sende
 }
 
 /** The :id param as a number, or null when it cannot name a biller. */
-function billerId(c: Context): number | null {
+export function billerId(c: Context): number | null {
   const text = c.req.param("id") ?? "";
   if (!ID.test(text)) return null;
   const id = Number(text);
@@ -178,11 +181,12 @@ export function billerRoutes(deps: BillerDeps): Hono<AppEnv> {
       const problem = conflict(db, householdId, fields, null);
       if (problem) return { problem };
       const id = db.run(
-        "INSERT INTO billers (household_id, name, kind, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO billers (household_id, name, kind, notes, fetch_invoices, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         householdId,
         fields.name,
         fields.kind,
         fields.notes,
+        fields.fetchInvoices ? 1 : 0,
         stamp,
         stamp,
       ).lastInsertRowid;
@@ -211,10 +215,11 @@ export function billerRoutes(deps: BillerDeps): Hono<AppEnv> {
       const problem = conflict(db, householdId, fields, id);
       if (problem) return { problem };
       db.run(
-        "UPDATE billers SET name = ?, kind = ?, notes = ?, updated_at = ? WHERE id = ?",
+        "UPDATE billers SET name = ?, kind = ?, notes = ?, fetch_invoices = ?, updated_at = ? WHERE id = ?",
         fields.name,
         fields.kind,
         fields.notes,
+        fields.fetchInvoices ? 1 : 0,
         stamp,
         id,
       );

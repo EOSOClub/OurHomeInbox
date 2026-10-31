@@ -28,7 +28,8 @@ function item(
     hasText: true,
     hasHtml: false,
     biller,
-    picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, needsCheck: false },
+    senderVerified: true,
+    picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
   };
 }
 

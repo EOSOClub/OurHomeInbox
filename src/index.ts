@@ -1,6 +1,7 @@
 // Entry point.
 //   node dist/index.js [serve]   the service: web UI and API, and every mailbox
-//                                read every capture.every_minutes (first right away)
+//                                read every capture.every_minutes (first right away),
+//                                each read followed by getting new emails' invoices
 //   node dist/index.js capture   read every mailbox once, capture what is new, exit
 // Captured mail is kept under data/mail (see store.ts), accounts in data/inbox.db.
 
@@ -14,6 +15,7 @@ import { log, setLogLevel } from "./log.js";
 import { captureMailbox } from "./mailbox.js";
 import { createApp } from "./server/app.js";
 import { openDatabase } from "./server/db.js";
+import { invoicePass } from "./server/invoices.js";
 import { CaptureStore } from "./store.js";
 
 /** Everything OurHomeInbox keeps, relative to the folder it runs in (/app/data in Docker). */
@@ -81,6 +83,12 @@ async function runService(config: Config, store: CaptureStore): Promise<number> 
   let stopping = false;
   const scheduled = async (): Promise<void> => {
     await capturePass(config, store).catch((err) => log.error(`Reading the mailboxes failed: ${String(err)}`));
+    // Then the invoices behind new emails' "View Invoice" links (see server/invoices.ts).
+    await invoicePass({ config, store, db })
+      .then(({ tried, saved }) => {
+        if (tried > 0) log.info(`Invoices: ${tried} link(s) opened, ${saved} invoice(s) saved`);
+      })
+      .catch((err) => log.error(`Getting invoices failed: ${String(err)}`));
     if (!stopping) {
       log.info(`Next read in ${config.capture.everyMinutes} minute(s)`);
       timer = setTimeout(scheduled, everyMs);

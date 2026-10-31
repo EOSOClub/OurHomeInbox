@@ -3,30 +3,37 @@
 //   GET /api/captures/:mailbox/:uidValidity/:uid             one email's capture record
 //   GET /api/captures/:mailbox/:uidValidity/:uid/raw         its raw .eml, as a download
 //   GET /api/captures/:mailbox/:uidValidity/:uid/attachments/:index   one attachment, as a download
+//   GET /api/captures/:mailbox/:uidValidity/:uid/choices/:field       what Fix offers for one value
+//   GET /api/captures/:mailbox/:uidValidity/:uid/invoice              the invoice its link gave, as a download
 //
 // Each email carries the household's biller for its sender (see matching.ts),
-// worked out on every request so a biller change shows at once, and what the
-// built-in reader picked out of it (see extraction.ts).
+// whether the mail provider confirmed that sender (see sender.ts), and what
+// the reader picked out of it with that biller's rules (see
+// extraction.ts and rules.ts), worked out on every request so a change to a
+// biller or a rule shows at once.
 //
 // Everything here came from strangers' email. It is sent as JSON or as a
 // download (never as a page), and nothing in it is used as a path except
 // through checks that keep it inside the message's own folder.
 
-import { readdir, readFile, realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Hono, type Context } from "hono";
-import type { Config, MailboxConfig } from "../config.js";
-import { mailboxSlug } from "../config.js";
+import type { Config } from "../config.js";
 import { log } from "../log.js";
-import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse } from "../shared/api.js";
+import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse, FieldChoicesResponse } from "../shared/api.js";
 import type { Capture } from "../shared/capture.js";
-import type { ExtractionSummary } from "../shared/extraction.js";
+import { FIELDS, type BillerRule, type ExtractionSummary, type FieldName } from "../shared/extraction.js";
+import type { InvoiceInfo, InvoiceRecord } from "../shared/invoice.js";
 import type { CaptureStore } from "../store.js";
 import { listBillers } from "./billers.js";
 import type { Database } from "./db.js";
-import { extract, summarize } from "./extraction.js";
+import { choicesFor, extract, PreparedEmail, summarize } from "./extraction.js";
 import { apiError, householdOf, type AppEnv } from "./http.js";
+import { eachCapture, householdMailboxes, INVOICE_FILE, readCapture, readInvoiceRecord, UID, UID_VALIDITY, type StoredCapture } from "./mail.js";
 import { BillerMatcher } from "./matching.js";
+import { billerEmails, householdRules } from "./rules.js";
+import { checkSender } from "./sender.js";
 
 export interface CaptureDeps {
   config: Config;
@@ -38,77 +45,29 @@ const NOT_FOUND = "That email was not found. It may be in a mailbox that is no l
 const BAD_LINK = "That link does not point to a saved email.";
 const NO_ATTACHMENT = "That attachment was not found.";
 const UNREADABLE = "That email's saved copy could not be read.";
+const NO_SUCH_FIELD = "That is not a value OurHomeInbox picks out.";
+const NO_BILLER = "To fix a value, this email's sender must belong to one of your billers first.";
+const NO_INVOICE = "This email has no saved invoice.";
 
-const UID_VALIDITY = /^\d+$/;
-const UID = /^[1-9]\d*$/;
 const INDEX = /^[1-9]\d*$/;
 
 /**
- * v1 has one household, and every mailbox in config.yml belongs to it, so a
- * signed-in user sees every configured mailbox's mail. When mailboxes become
- * per-household, this is where the list gets filtered by c.var.user.household.
- */
-function householdMailboxes(config: Config): Map<string, MailboxConfig> {
-  return new Map(config.mailboxes.map((mailbox) => [mailboxSlug(mailbox.name), mailbox]));
-}
-
-/** A light shape check, so a damaged capture.json is skipped instead of breaking the list. */
-function isCapture(value: unknown): value is Capture {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  const stringOrNull = (x: unknown) => x === null || typeof x === "string";
-  return (
-    typeof v.capturedAt === "string" &&
-    stringOrNull(v.subject) &&
-    stringOrNull(v.date) &&
-    stringOrNull(v.text) &&
-    stringOrNull(v.html) &&
-    Array.isArray(v.from) &&
-    Array.isArray(v.attachments) &&
-    Array.isArray(v.links)
-  );
-}
-
-async function readCapture(dir: string): Promise<Capture | null> {
-  let text: string;
-  try {
-    text = await readFile(join(dir, "capture.json"), "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
-  const value: unknown = JSON.parse(text);
-  if (!isCapture(value)) throw new Error("capture.json is not a capture record");
-  return value;
-}
-
-/** Folder names in `dir` that match `pattern`; none when the folder does not exist. */
-async function subfolders(dir: string, pattern: RegExp): Promise<string[]> {
-  try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    return entries.filter((e) => e.isDirectory() && pattern.test(e.name)).map((e) => e.name);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw err;
-  }
-}
-
-/**
  * Remembers each email's summary, so the list does not read every email on
- * every load. Keyed on the email's place and its fingerprint, so a changed
- * file is read again. The reader is the same for every household; once
- * biller rules exist, the key must include the rules that applied.
+ * every load. Keyed on the email's place, its fingerprint and the rules that
+ * applied, so a changed file or a changed rule is read again.
  */
 class SummaryCache {
   private readonly entries = new Map<string, ExtractionSummary>();
 
   constructor(private readonly limit = 10_000) {}
 
-  get(id: string, capture: Capture): ExtractionSummary {
-    const key = `${id}|${capture.capturedAt}|${capture.raw?.sha256 ?? ""}`;
+  get(id: string, capture: Capture, rules: readonly BillerRule[], invoice: InvoiceRecord | null): ExtractionSummary {
+    const ruleKey = rules.map((rule) => `${rule.field}=${rule.label}`).join("\n");
+    const invoiceKey = invoice ? `${invoice.outcome}:${invoice.sha256 ?? ""}` : "";
+    const key = `${id}|${capture.capturedAt}|${capture.raw?.sha256 ?? ""}|${invoiceKey}|${ruleKey}`;
     let summary = this.entries.get(key);
     if (!summary) {
-      summary = summarize(extract(capture));
+      summary = summarize(extract(capture, rules, invoice?.text ?? null));
       if (this.entries.size >= this.limit) this.entries.clear();
       this.entries.set(key, summary);
     }
@@ -116,16 +75,24 @@ class SummaryCache {
   }
 }
 
-function listItem(
-  slug: string,
-  mailbox: MailboxConfig,
-  uidValidity: string,
-  uid: number,
-  capture: Capture,
-  matcher: BillerMatcher,
-  summaries: SummaryCache,
-): CaptureListItem {
-  const id = `${slug}/${uidValidity}/${uid}`;
+/** The household's billers and their rules, read once per request. */
+class HouseholdReader {
+  readonly matcher: BillerMatcher;
+  private readonly rules: Map<number, BillerRule[]>;
+
+  constructor(db: Database, householdId: number) {
+    this.matcher = new BillerMatcher(listBillers(db, householdId));
+    this.rules = householdRules(db, householdId);
+  }
+
+  rulesFor(billerId: number | undefined): BillerRule[] {
+    return billerId === undefined ? [] : (this.rules.get(billerId) ?? []);
+  }
+}
+
+function listItem(stored: StoredCapture, reader: HouseholdReader, summaries: SummaryCache): CaptureListItem {
+  const { id, slug, mailbox, uidValidity, uid, capture } = stored;
+  const biller = reader.matcher.match(capture.from);
   return {
     id,
     mailbox: mailbox.name,
@@ -141,27 +108,26 @@ function listItem(
     linkCount: capture.links.length,
     hasText: capture.text !== null,
     hasHtml: capture.html !== null,
-    biller: matcher.match(capture.from),
-    picked: summaries.get(id, capture),
+    biller,
+    senderVerified: checkSender(capture).verified,
+    picked: summaries.get(id, capture, reader.rulesFor(biller?.id), stored.invoice),
   };
 }
 
-async function listCaptures(deps: CaptureDeps, matcher: BillerMatcher, summaries: SummaryCache): Promise<CaptureListItem[]> {
+/** What the API says about an email's invoice: its record without the text or the link. */
+function invoiceInfo(record: InvoiceRecord | null): InvoiceInfo | null {
+  if (!record) return null;
+  const { version: _version, text: _text, url: _url, ...info } = record;
+  return info;
+}
+
+async function listCaptures(deps: CaptureDeps, reader: HouseholdReader, summaries: SummaryCache): Promise<CaptureListItem[]> {
   const items: CaptureListItem[] = [];
-  for (const [slug, mailbox] of householdMailboxes(deps.config)) {
-    const mailboxDir = join(deps.store.root, slug);
-    for (const uidValidity of await subfolders(mailboxDir, UID_VALIDITY)) {
-      for (const uidName of await subfolders(join(mailboxDir, uidValidity), UID)) {
-        const uid = Number(uidName);
-        if (!Number.isSafeInteger(uid)) continue;
-        const dir = join(mailboxDir, uidValidity, uidName);
-        try {
-          const capture = await readCapture(dir);
-          if (capture) items.push(listItem(slug, mailbox, uidValidity, uid, capture, matcher, summaries));
-        } catch (err) {
-          log.warn(`Skipping ${join(dir, "capture.json")}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
+  for await (const stored of eachCapture(deps.config, deps.store)) {
+    try {
+      items.push(listItem(stored, reader, summaries));
+    } catch (err) {
+      log.warn(`Skipping ${join(stored.dir, "capture.json")}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   const when = (item: CaptureListItem) => {
@@ -190,7 +156,7 @@ function locate(c: Context, deps: CaptureDeps): Located | Response {
   return { slug, uidValidity, uid, dir: deps.store.messageDir(mailbox.name, uidValidity, uid) };
 }
 
-async function locateCapture(c: Context, deps: CaptureDeps): Promise<(Located & { capture: Capture }) | Response> {
+async function locateCapture(c: Context, deps: CaptureDeps): Promise<(Located & { capture: Capture; invoice: InvoiceRecord | null }) | Response> {
   const found = locate(c, deps);
   if (found instanceof Response) return found;
   let capture: Capture | null;
@@ -201,7 +167,7 @@ async function locateCapture(c: Context, deps: CaptureDeps): Promise<(Located & 
     return apiError(c, 500, UNREADABLE);
   }
   if (!capture) return apiError(c, 404, NOT_FOUND);
-  return { ...found, capture };
+  return { ...found, capture, invoice: await readInvoiceRecord(found.dir) };
 }
 
 /** True when `path` is strictly inside `dir` (not `dir` itself, not beside it). */
@@ -238,23 +204,63 @@ function download(c: Context, content: Buffer, name: string): Response {
 export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
-  const matcherFor = (c: Context<AppEnv>) => new BillerMatcher(listBillers(deps.db, householdOf(c)));
+  const readerFor = (c: Context<AppEnv>) => new HouseholdReader(deps.db, householdOf(c));
   const summaries = new SummaryCache();
 
   app.get("/captures", async (c) => {
-    const body: CaptureListResponse = { captures: await listCaptures(deps, matcherFor(c), summaries) };
+    const body: CaptureListResponse = { captures: await listCaptures(deps, readerFor(c), summaries) };
     return c.json(body);
   });
 
   app.get("/captures/:mailbox/:uidValidity/:uid", async (c) => {
     const found = await locateCapture(c, deps);
     if (found instanceof Response) return found;
+    const reader = readerFor(c);
+    const biller = reader.matcher.match(found.capture.from);
     const body: CaptureDetailResponse = {
       id: `${found.slug}/${found.uidValidity}/${found.uid}`,
       mailboxSlug: found.slug,
       capture: found.capture,
-      biller: matcherFor(c).match(found.capture.from),
-      extraction: extract(found.capture),
+      biller,
+      sender: checkSender(found.capture),
+      invoice: invoiceInfo(found.invoice),
+      extraction: extract(found.capture, reader.rulesFor(biller?.id), found.invoice?.text ?? null),
+    };
+    return c.json(body);
+  });
+
+  app.get("/captures/:mailbox/:uidValidity/:uid/invoice", async (c) => {
+    const found = await locateCapture(c, deps);
+    if (found instanceof Response) return found;
+    // Always invoice.pdf (what invoices.ts writes), never a path from the record.
+    if (found.invoice?.file !== INVOICE_FILE) return apiError(c, 404, NO_INVOICE);
+    let content: Buffer;
+    try {
+      content = await readFile(join(found.dir, INVOICE_FILE));
+    } catch (err) {
+      log.warn(`Could not read ${join(found.dir, INVOICE_FILE)}: ${err instanceof Error ? err.message : String(err)}`);
+      return apiError(c, 404, NO_INVOICE);
+    }
+    return download(c, content, `invoice-${found.uid}.pdf`);
+  });
+
+  app.get("/captures/:mailbox/:uidValidity/:uid/choices/:field", async (c) => {
+    const field = c.req.param("field");
+    if (!(FIELDS as readonly string[]).includes(field)) return apiError(c, 404, NO_SUCH_FIELD);
+    const found = await locateCapture(c, deps);
+    if (found instanceof Response) return found;
+    const reader = readerFor(c);
+    const biller = reader.matcher.match(found.capture.from);
+    if (!biller) return apiError(c, 409, NO_BILLER);
+    const rules = reader.rulesFor(biller.id);
+    const id = `${found.slug}/${found.uidValidity}/${found.uid}`;
+    const others = await billerEmails(deps, reader.matcher, biller.id, id);
+    const body: FieldChoicesResponse = {
+      field: field as FieldName,
+      biller,
+      rule: rules.find((rule) => rule.field === field) ?? null,
+      otherEmails: others.length,
+      choices: choicesFor(new PreparedEmail(found.capture, found.invoice?.text ?? null), field as FieldName, rules, others),
     };
     return c.json(body);
   });

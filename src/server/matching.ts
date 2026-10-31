@@ -4,9 +4,9 @@
 // "citywater.example". A household's senders are unique, so there is never a
 // tie.
 //
-// This trusts the From line, which a sender can forge. Checking the mail
-// provider's verdict (the Authentication-Results header) is planned for
-// before results go to OurHome.
+// This trusts the From line, which a sender can forge. The mail provider's
+// verdict on it is checked separately (sender.ts), and is what decides
+// whether an email can be sent on or its links followed.
 
 import { domainToUnicode } from "node:url";
 import type { Biller, BillerMatch } from "../shared/api.js";

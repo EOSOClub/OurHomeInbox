@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { BillerMatch, CaptureDetailResponse } from "../../../src/shared/api";
 import type { Capture } from "../../../src/shared/capture";
 import { extract } from "../../../src/server/extraction";
+import { checkSender } from "../../../src/server/sender";
 import { CaptureDetailView } from "./CaptureDetailView";
 import { SafeEmailFrame } from "./SafeEmailFrame";
 
@@ -52,7 +53,7 @@ function makeCapture(overrides: Partial<Capture> = {}): Capture {
 
 function detail(capture: Capture, biller: BillerMatch | null = null): CaptureDetailResponse {
   // The server's own reader, so the picks match what the API would send.
-  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller, extraction: extract(capture) };
+  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller, sender: checkSender(capture), invoice: null, extraction: extract(capture) };
 }
 
 function openTab(name: string) {
@@ -152,6 +153,89 @@ describe("CaptureDetailView", () => {
     expect(picked.textContent).toContain("A reminder of a bill already sent.");
     expect(picked.textContent).toContain("This is a credit: nothing is owed.");
     expect(picked.textContent).toContain("This email gives more than one due date: Nov 4, 2026 and Nov 5, 2026.");
+  });
+
+  it("shows the invoice its link gave, with the values picked from it marked there and not in the email", () => {
+    const invoiceText = {
+      pieces: ["Customer ID:", "12-34567-89012", "Total Due by", "11/04/2026"],
+      places: [
+        { page: 1, line: 0 },
+        { page: 1, line: 0 },
+        { page: 1, line: 1 },
+        { page: 1, line: 1 },
+      ],
+      below: [null, null, null, null],
+    };
+    const capture = makeCapture();
+    const view: CaptureDetailResponse = {
+      ...detail(capture),
+      extraction: extract(capture, [], invoiceText),
+      invoice: {
+        outcome: "saved",
+        reason: 'Got the invoice (a 1-page PDF) from the email\'s "View Invoice" link at wmezpay.wm.example.',
+        linkText: "View Invoice",
+        host: "wmezpay.wm.example",
+        triedAt: "2026-10-30T12:00:00Z",
+        attempts: 3,
+        file: "invoice.pdf",
+        size: 2048,
+        sha256: "d".repeat(64),
+        pages: 1,
+      },
+    };
+    render(<CaptureDetailView detail={view} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    const rows = [...picked.querySelectorAll("dl > div")].map((row) => row.textContent);
+    expect(rows[1]).toContain('Due dateNov 4, 2026Found after "Total Due by" in the invoiceIn the invoice: Total Due by|11/04/2026');
+    expect(picked.textContent).toContain("Values found in the invoice are marked in the Invoice tab.");
+    const srcdoc = screen.getByRole("tabpanel").querySelector("iframe")?.getAttribute("srcdoc") ?? "";
+    expect(srcdoc).toContain('data-ohi-value="Amount"');
+    expect(srcdoc).not.toContain('data-ohi-value="Due date"');
+
+    const panel = openTab("Invoice");
+    expect(panel.textContent).toContain('Got the invoice (a 1-page PDF) from the email\'s "View Invoice" link at wmezpay.wm.example.');
+    expect(within(panel).getByRole("link", { name: /Download the invoice/ }).getAttribute("href")).toBe("/api/captures/proton-bills/123/45/invoice");
+    const text = within(panel).getByLabelText("The invoice's text");
+    expect(text.textContent).toBe("Page 1\nCustomer ID:    12-34567-89012\nTotal Due by    11/04/2026");
+    expect([...text.querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["Customer ID", "12-34567-89012", "Total Due by", "11/04/2026"]);
+  });
+
+  it("says a past due bill is due now, keeps the printed date, and marks the words in the email", () => {
+    const html = "<p>Your account is Past Due. Please pay immediately.</p><p>Amount Due: $62.00</p><p>Due Date: 11/04/2026</p>";
+    render(<CaptureDetailView detail={detail(makeCapture({ html, text: null }))} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    expect(picked.textContent).toContain('This bill is past due: the email says "Your account is Past Due". It is due now.');
+    const due = [...picked.querySelectorAll("dl > div")].find((r) => r.querySelector("dt")?.textContent === "Due date")!.textContent;
+    expect(due).toContain('Due dateDue now (past due)The email says "Your account is Past Due".');
+    expect(due).toContain("It also gives a date:Nov 4, 2026");
+    const srcdoc = screen.getByRole("tabpanel").querySelector("iframe")?.getAttribute("srcdoc") ?? "";
+    expect(srcdoc).toContain('<mark data-ohi-value="Past due">Your account is Past Due</mark>');
+  });
+
+  it("does not call a past due bill's missing due date missing", () => {
+    render(<CaptureDetailView detail={detail(makeCapture({ html: "<p>Past Due</p><p>Amount Due: $62.00</p>", text: null }))} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    expect(picked.textContent).not.toContain("Not found in this email");
+    expect(picked.textContent).toContain('Due now (past due)The email says "Past Due".');
+  });
+
+  it("has no Invoice tab when no invoice was got", () => {
+    render(<CaptureDetailView detail={detail(makeCapture())} />);
+    expect(screen.queryByRole("tab", { name: /^Invoice/ })).toBeNull();
+  });
+
+  it("says whether the mail provider confirmed the sender", () => {
+    render(<CaptureDetailView detail={detail(makeCapture())} />);
+    const row = () => [...document.querySelectorAll("dl > div")].find((r) => r.querySelector("dt")?.textContent === "Sender check")!.textContent;
+    expect(row()).toBe("Sender checkNot verifiedProton left no verdict on this email, so who sent it cannot be checked.");
+    cleanup();
+
+    const headers = [
+      { name: "received", line: "Received: by mailin.protonmail.ch" },
+      { name: "authentication-results", line: "Authentication-Results: mail.protonmail.ch; dmarc=pass (p=reject dis=none) header.from=water.example" },
+    ];
+    render(<CaptureDetailView detail={detail(makeCapture({ headers }))} />);
+    expect(row()).toBe("Sender checkReally from water.exampleProton checked that this email really comes from water.example.");
   });
 
   it("says when nothing was picked out", () => {

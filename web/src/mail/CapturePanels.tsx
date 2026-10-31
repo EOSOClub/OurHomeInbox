@@ -6,10 +6,11 @@ import { Download, FileText, Paperclip } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import type { Capture } from "../../../src/shared/capture";
 import type { Extraction } from "../../../src/shared/extraction";
-import { captureAttachmentUrl, captureRawUrl } from "../api";
+import type { InvoiceInfo } from "../../../src/shared/invoice";
+import { captureAttachmentUrl, captureInvoiceUrl, captureRawUrl } from "../api";
 import { buttonClasses, CopyButton, Notice } from "../components/ui";
-import { formatBytes, shortHash, subjectDisplay } from "../format";
-import { marksFor, textHighlights } from "./picked";
+import { formatBytes, formatDateTime, shortHash, subjectDisplay } from "../format";
+import { invoiceLayout, marksFor, textHighlights } from "./picked";
 import { SafeEmailFrame } from "./SafeEmailFrame";
 import { TextBlock } from "./TextBlock";
 
@@ -96,6 +97,34 @@ function Fingerprint({ sha256, what }: { sha256: string; what: string }) {
       </code>
       <CopyButton text={sha256} label={`Copy the full fingerprint of ${what}`} />
     </span>
+  );
+}
+
+/** The invoice behind the email's "View Invoice" link: what happened, the PDF to download, and its text with the picked values marked. */
+export function InvoicePanel({ id, invoice, extraction }: { id: string; invoice: InvoiceInfo; extraction: Extraction }) {
+  const { text, highlights } = useMemo(() => invoiceLayout(extraction), [extraction]);
+  return (
+    <div className="flex flex-col gap-3">
+      <Notice tone={invoice.outcome === "saved" ? "info" : "warning"}>
+        <p>{invoice.reason}</p>
+        <p className="mt-1 text-muted">Tried {formatDateTime(invoice.triedAt)}.</p>
+      </Notice>
+      {invoice.file ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <a href={captureInvoiceUrl(id)} download className={buttonClasses("secondary")}>
+            <Download aria-hidden className="size-4" />
+            Download the invoice (PDF)
+          </a>
+          {invoice.size !== null ? <span className="text-sm text-muted">{formatBytes(invoice.size)}</span> : null}
+        </div>
+      ) : null}
+      {text ? (
+        <>
+          <p className="text-sm text-muted">The invoice's text, as OurHomeInbox reads it. Values picked out of it are marked.</p>
+          <TextBlock text={text} highlights={highlights} label="The invoice's text" />
+        </>
+      ) : null}
+    </div>
   );
 }
 

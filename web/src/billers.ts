@@ -29,11 +29,12 @@ export interface BillerForm {
   /** As typed: one per line, or separated by commas. */
   senders: string;
   notes: string;
+  fetchInvoices: boolean;
 }
 
 export type BillerFormErrors = Partial<Record<keyof BillerForm, string>>;
 
-export const EMPTY_BILLER_FORM: BillerForm = { name: "", kind: null, senders: "", notes: "" };
+export const EMPTY_BILLER_FORM: BillerForm = { name: "", kind: null, senders: "", notes: "", fetchInvoices: true };
 
 /** The form's problems, or the request to send when there are none. */
 export function checkBillerForm(form: BillerForm): { errors: BillerFormErrors; input: BillerInput | null } {
@@ -57,7 +58,7 @@ export function checkBillerForm(form: BillerForm): { errors: BillerFormErrors; i
   if (notes.length > MAX_BILLER_NOTES) errors.notes = `Keep the notes under ${MAX_BILLER_NOTES} characters.`;
 
   if (Object.keys(errors).length > 0 || form.kind === null) return { errors, input: null };
-  return { errors, input: { name, kind: form.kind, senders, notes } };
+  return { errors, input: { name, kind: form.kind, senders, notes, fetchInvoices: form.fetchInvoices } };
 }
 
 /**

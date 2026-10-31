@@ -2,6 +2,7 @@
 //   <root>/<mailbox>/<uidvalidity>/<uid>/message.eml        the raw email, as received
 //   <root>/<mailbox>/<uidvalidity>/<uid>/attachments/<n>-<name>
 //   <root>/<mailbox>/<uidvalidity>/<uid>/capture.json       what was captured, written last
+//   <root>/<mailbox>/<uidvalidity>/<uid>/invoice.pdf, invoice.json   added later by server/invoices.ts
 //
 // A message counts as captured only once capture.json exists, so a run that
 // stops part way captures that message again next time. UIDVALIDITY is part of

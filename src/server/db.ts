@@ -1,5 +1,5 @@
 // The server's own database: households, accounts, sign-in sessions and each
-// household's billers, in one SQLite file next to the captured mail. Captured
+// household's billers and their rules, in one SQLite file next to the captured mail. Captured
 // mail itself stays as files (see store.ts).
 //
 // The schema changes through MIGRATIONS only, in order, never edited once
@@ -62,6 +62,25 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (biller_id, sender)
   );
   CREATE UNIQUE INDEX biller_senders_household ON biller_senders(household_id, sender);
+  `,
+  // Biller rules, saved with Fix: in this biller's emails, the field is the
+  // value after this label. One per field. The field is checked in code, so a
+  // new field needs no migration.
+  `
+  CREATE TABLE biller_rules (
+    biller_id integer NOT NULL REFERENCES billers(id) ON DELETE CASCADE,
+    household_id integer NOT NULL REFERENCES households(id),
+    field text NOT NULL,
+    label text NOT NULL,
+    created_at text NOT NULL,
+    PRIMARY KEY (biller_id, field)
+  );
+  CREATE INDEX biller_rules_household ON biller_rules(household_id);
+  `,
+  // Whether to get the invoice behind a biller's "View Invoice" links (see
+  // invoices.ts). On unless the household turns it off.
+  `
+  ALTER TABLE billers ADD COLUMN fetch_invoices integer NOT NULL DEFAULT 1;
   `,
 ];
 

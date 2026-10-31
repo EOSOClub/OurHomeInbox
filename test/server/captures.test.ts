@@ -62,7 +62,8 @@ describe("GET /api/captures", () => {
       hasText: true,
       hasHtml: false,
       biller: null,
-      picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, needsCheck: false },
+      senderVerified: false,
+      picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
     });
     expect(captures[0]).toMatchObject({ uid: 2, hasHtml: true, linkCount: 2, attachmentCount: 0 });
     expect(captures[1]).toMatchObject({ uid: 3, date: null, capturedAt: "2026-10-20T00:00:00.000Z" });
@@ -149,6 +150,8 @@ describe("GET /api/captures/:mailbox/:uidValidity/:uid", () => {
     expect(body.mailboxSlug).toBe("proton-bills");
     expect(body.capture).toMatchObject({ subject: "Power bill", uid: 2, html: expect.stringContaining("<a href") });
     expect(body.biller).toBeNull();
+    // The test emails carry no verdict from Proton.
+    expect(body.sender).toMatchObject({ verified: false, outcome: "missing", domain: "water.example" });
     expect(body.extraction).toMatchObject({ source: "html", kind: "statement", fields: [] });
   });
 
@@ -156,7 +159,7 @@ describe("GET /api/captures/:mailbox/:uidValidity/:uid", () => {
     const html = "<table><tr><td>Amount Billed:</td><td>$4.13</td></tr><tr><td>Due Date:</td><td>11/04/2026</td></tr></table>";
     await saveEmail(server.store, rawEmail({ subject: "Your bill is ready", html }), { uid: 7 });
     const { captures } = await json<CaptureListResponse>(await get("/api/captures"));
-    expect(captures[0]!.picked).toEqual({ kind: "bill", amount: "4.13", dueDate: "2026-11-04", paidDate: null, needsCheck: false });
+    expect(captures[0]!.picked).toEqual({ kind: "bill", amount: "4.13", dueDate: "2026-11-04", paidDate: null, dueNow: false, needsCheck: false });
 
     const { extraction } = await json<CaptureDetailResponse>(await get("/api/captures/proton-bills/1700000000/7"));
     expect(extraction.source).toBe("html");

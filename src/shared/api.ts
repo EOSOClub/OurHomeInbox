@@ -14,19 +14,27 @@
 //   GET    /api/captures/:mailbox/:uidValidity/:uid               CaptureDetailResponse
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/raw           the raw .eml, as a download
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/attachments/:index   one attachment (1-based), as a download
+//   GET    /api/captures/:mailbox/:uidValidity/:uid/choices/:field       FieldChoicesResponse; 409 when no biller matches
+//   GET    /api/captures/:mailbox/:uidValidity/:uid/invoice              the invoice its link gave (PDF), as a download
 //   GET    /api/settings                     SettingsResponse
 //   GET    /api/billers                      BillerListResponse
 //   POST   /api/billers                      BillerInput -> Biller (201)
 //   GET    /api/billers/:id                  Biller
 //   PUT    /api/billers/:id                  BillerInput -> Biller
 //   DELETE /api/billers/:id                  -> 204
+//   GET    /api/billers/:id/rules            BillerRulesResponse
+//   PUT    /api/billers/:id/rules/:field     BillerRuleInput -> 204
+//   DELETE /api/billers/:id/rules/:field     -> 204
 //
-// :mailbox is the mailbox's slug (CaptureListItem.mailboxSlug). Billers
-// belong to the signed-in person's household.
+// :mailbox is the mailbox's slug (CaptureListItem.mailboxSlug). :field is one
+// of FIELDS (shared/extraction.ts). Billers and their rules belong to the
+// signed-in person's household.
 
 import type { BillerKind } from "./billers.js";
 import type { Capture, CapturedAddress } from "./capture.js";
-import type { Extraction, ExtractionSummary } from "./extraction.js";
+import type { BillerRule, Extraction, ExtractionSummary, FieldChoice, FieldName } from "./extraction.js";
+import type { InvoiceInfo } from "./invoice.js";
+import type { SenderCheck } from "./sender.js";
 
 export interface ApiError {
   error: string;
@@ -89,6 +97,8 @@ export interface CaptureListItem {
   hasHtml: boolean;
   /** The household's biller for this email's sender, or null when none matches. */
   biller: BillerMatch | null;
+  /** True when the mail provider confirmed the email comes from the sender it shows (SenderCheck.verified). */
+  senderVerified: boolean;
   /** What the reader picked out of it, in short. */
   picked: ExtractionSummary;
 }
@@ -112,8 +122,24 @@ export interface CaptureDetailResponse {
   mailboxSlug: string;
   capture: Capture;
   biller: BillerMatch | null;
-  /** What the reader picked out of it, and where each value was found. */
+  /** Whether it really comes from the sender it shows, as the mail provider checked it. */
+  sender: SenderCheck;
+  /** The invoice behind its "View Invoice" link, once that has been tried; null when it has not (or cannot be). */
+  invoice: InvoiceInfo | null;
+  /** What the reader picked out of it with its biller's rules, and where each value was found. */
   extraction: Extraction;
+}
+
+/** What Fix offers for one value of one email. */
+export interface FieldChoicesResponse {
+  field: FieldName;
+  biller: BillerMatch;
+  /** The biller's rule for this field now, or null when the built-in reader decides. */
+  rule: BillerRule | null;
+  /** How many other captured emails come from this biller. */
+  otherEmails: number;
+  /** In the order they appear in the email. */
+  choices: FieldChoice[];
 }
 
 export interface SettingsMailbox {
@@ -149,6 +175,8 @@ export interface Biller {
   /** Addresses and domains its emails come from, as stored (see shared/billers.ts). */
   senders: string[];
   notes: string;
+  /** Get the invoice behind its emails' "View Invoice" links (see invoices.ts). */
+  fetchInvoices: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -159,9 +187,29 @@ export interface BillerInput {
   kind: BillerKind;
   senders: string[];
   notes?: string;
+  /** On when left out. */
+  fetchInvoices?: boolean;
 }
 
 export interface BillerListResponse {
   /** By name. */
   billers: Biller[];
+}
+
+export interface BillerRuleItem extends BillerRule {
+  createdAt: string;
+  /** How many of the biller's emails this rule picked a value in. */
+  usedOn: number;
+}
+
+export interface BillerRulesResponse {
+  /** In the order fields are shown. */
+  rules: BillerRuleItem[];
+  /** How many captured emails come from this biller. */
+  emails: number;
+}
+
+/** Saving a rule: the words the value comes after, as chosen in Fix. */
+export interface BillerRuleInput {
+  label: string;
 }

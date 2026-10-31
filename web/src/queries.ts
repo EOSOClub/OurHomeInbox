@@ -3,16 +3,23 @@
 
 import { QueryClient, useQuery } from "@tanstack/react-query";
 import type { SessionResponse } from "../../src/shared/api";
+import type { FieldName } from "../../src/shared/extraction";
 import { api, ApiRequestError } from "./api";
 
 export const queryKeys = {
   session: ["session"] as const,
   captures: ["captures"] as const,
   capture: (id: string) => ["captures", id] as const,
+  // Under the email, so whatever refreshes the email refreshes these too.
+  choices: (id: string, field: FieldName) => ["captures", id, "choices", field] as const,
   settings: ["settings"] as const,
   billers: ["billers"] as const,
   biller: (id: number) => ["billers", id] as const,
+  billerRules: (id: number) => ["billers", id, "rules"] as const,
 };
+
+/** Every biller's rules list, whichever biller. */
+const isRulesQuery = (query: { queryKey: readonly unknown[] }) => query.queryKey[0] === queryKeys.billers[0] && query.queryKey[2] === "rules";
 
 export const SIGNED_OUT: SessionResponse = { user: null, setupNeeded: false };
 
@@ -35,10 +42,21 @@ export function showSignedOut(client: QueryClient): void {
   client.setQueryData(queryKeys.session, SIGNED_OUT);
 }
 
-/** After a biller is added, changed or deleted: the biller list, and every email's matched biller. */
+/**
+ * After a biller is added, changed or deleted: the biller list, every
+ * email's matched biller, and the rules lists (which count the emails a
+ * biller's senders cover).
+ */
 export function refreshAfterBillerChange(client: QueryClient): void {
   void client.invalidateQueries({ queryKey: queryKeys.billers, exact: true });
   void client.invalidateQueries({ queryKey: queryKeys.captures });
+  void client.invalidateQueries({ predicate: isRulesQuery });
+}
+
+/** After a rule is saved or removed: every email (what was picked out of it) and the biller's rules list. */
+export function refreshAfterRuleChange(client: QueryClient, billerId: number): void {
+  void client.invalidateQueries({ queryKey: queryKeys.captures });
+  void client.invalidateQueries({ queryKey: queryKeys.billerRules(billerId) });
 }
 
 export function useSession() {
@@ -63,4 +81,13 @@ export function useBillers() {
 
 export function useBiller(id: number) {
   return useQuery({ queryKey: queryKeys.biller(id), queryFn: ({ signal }) => api.getBiller(id, signal) });
+}
+
+/** What Fix offers for one value of an email. Always fetched fresh when Fix opens, as other emails may have changed. */
+export function useChoices(id: string, field: FieldName) {
+  return useQuery({ queryKey: queryKeys.choices(id, field), queryFn: ({ signal }) => api.getChoices(id, field, signal), staleTime: 0 });
+}
+
+export function useBillerRules(id: number) {
+  return useQuery({ queryKey: queryKeys.billerRules(id), queryFn: ({ signal }) => api.getBillerRules(id, signal) });
 }

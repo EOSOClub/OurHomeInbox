@@ -2,8 +2,8 @@
 // here are made up).
 
 import { describe, expect, it } from "vitest";
-import { extract, parseDate, parseMoney, parseNumber, summarize } from "../../src/server/extraction.js";
-import type { Extraction, FieldName } from "../../src/shared/extraction.js";
+import { choicesFor, extract, parseDate, parseMoney, parseNumber, PreparedEmail, summarize } from "../../src/server/extraction.js";
+import type { BillerRule, Extraction, FieldName } from "../../src/shared/extraction.js";
 
 function email(html: string, subject = "Your bill") {
   return extract({ subject, html, text: null });
@@ -129,7 +129,7 @@ describe("finding values by their labels", () => {
   it("keeps both values, for a person to check, when one label gives two", () => {
     const x = email("<p>Amount Due: $10.00</p><p>Amount Due: $12.00</p><p>Due Date: 11/04/2026</p>");
     expect(values(x).amount).toEqual(["10.00", "12.00"]);
-    expect(summarize(x)).toEqual({ kind: "bill", amount: null, dueDate: "2026-11-04", paidDate: null, needsCheck: true });
+    expect(summarize(x)).toEqual({ kind: "bill", amount: null, dueDate: "2026-11-04", paidDate: null, dueNow: false, needsCheck: true });
   });
 
   it("reads a credit as a negative amount", () => {
@@ -199,6 +199,144 @@ describe("which body is read", () => {
       kind: "statement",
       kindReason: "No amount or due date was found.",
       fields: [],
+      invoice: null,
+      dueNow: null,
     });
+  });
+});
+
+describe("biller rules", () => {
+  const xcel = cells("Due Date: 11/12/2026", "Payment Amount:", "$194.26", "Current Charges*: $202.63");
+
+  it("picks the value after the rule's label, ahead of the built-in labels", () => {
+    expect(values(email(xcel)).amount).toEqual(["194.26"]);
+    const ruled = extract({ subject: "Your bill", html: xcel, text: null }, [{ field: "amount", label: "Current Charges" }]);
+    const amount = ruled.fields.find((f) => f.field === "amount")!;
+    expect(amount).toMatchObject({ by: "rule", values: [{ value: "202.63", shown: "$202.63", label: "Current Charges" }] });
+    expect(ruled.fields.find((f) => f.field === "dueDate")?.by).toBe("reader");
+  });
+
+  it("falls back to the built-in labels when the rule's label is not in the email", () => {
+    const ruled = extract({ subject: "Your bill", html: xcel, text: null }, [{ field: "amount", label: "Total Charges" }]);
+    expect(ruled.fields.find((f) => f.field === "amount")).toMatchObject({ by: "reader", values: [{ value: "194.26" }] });
+  });
+
+  it("ignores case, and a rule's label takes the words from a built-in label of another field", () => {
+    const html = cells("Payment Date: 11/04/2026", "Amount: $5.00");
+    expect(values(email(html))).toEqual({ amount: ["5.00"], paidDate: ["2026-11-04"] });
+    const ruled = extract({ subject: "Your bill", html, text: null }, [{ field: "dueDate", label: "payment date" }]);
+    expect(values(ruled)).toEqual({ amount: ["5.00"], dueDate: ["2026-11-04"] });
+    expect(ruled.kind).toBe("bill");
+  });
+
+  it("treats a rule's label as words, never as a pattern", () => {
+    const html = cells("Total (USD): $9.99", "Amount: $1.00");
+    const rule: BillerRule = { field: "amount", label: "Total (USD)" };
+    expect(values(extract({ subject: "Your bill", html, text: null }, [rule])).amount).toEqual(["9.99"]);
+    const wild: BillerRule = { field: "amount", label: ".*" };
+    expect(values(extract({ subject: "Your bill", html, text: null }, [wild])).amount).toEqual(["1.00"]);
+  });
+
+  it("lets a rule find a field the built-in reader cannot", () => {
+    const html = cells("Your payment of $42.00 was received.");
+    expect(values(email(html, "Payment received")).amount).toBeUndefined();
+    const ruled = extract({ subject: "Payment received", html, text: null }, [{ field: "amount", label: "Your payment of" }]);
+    expect(values(ruled).amount).toEqual(["42.00"]);
+  });
+});
+
+describe("Fix: the values to choose from", () => {
+  const prepare = (html: string, subject = "Your bill") => new PreparedEmail({ subject, html, text: null });
+  const brief = (field: FieldName, html: string, rules: BillerRule[] = [], others: string[] = []) =>
+    choicesFor(prepare(html), field, rules, others.map((o) => prepare(o))).map((c) => [c.label, c.value.value, c.current, c.changes]);
+
+  it("offers each amount with the words before it, marking what is picked now", () => {
+    const html = cells("Due Date: 11/12/2026", "Payment Amount:", "$194.26", "Current Charges*: $202.63", "Average Daily Cost: $6.99");
+    expect(brief("amount", html)).toEqual([
+      ["Payment Amount", "194.26", true, 0],
+      ["Current Charges", "202.63", false, 0],
+      ["Average Daily Cost", "6.99", false, 0],
+    ]);
+  });
+
+  it("offers a value the built-in reader missed, and the last few words of a sentence as its label", () => {
+    const html = cells("Thank you. Your payment of $42.00 was received on 10/26/2026.");
+    expect(brief("amount", html)).toEqual([["Your payment of", "42.00", false, 0]]);
+    expect(brief("paidDate", html)).toEqual([["was received on", "2026-10-26", false, 0]]);
+  });
+
+  it("says how many of the biller's other emails a rule would change", () => {
+    const html = cells("Payment Amount: $60.00", "Convenience Fee: $0.00", "Total: $60.00");
+    const others = [
+      cells("Payment Amount: $50.00", "Convenience Fee: $1.50", "Total: $51.50"),
+      cells("Payment Amount: $75.00", "Total: $75.00"),
+      cells("Nothing here"),
+    ];
+    expect(brief("amount", html, [], others)).toEqual([
+      ["Payment Amount", "60.00", false, 1],
+      ["Convenience Fee", "0.00", false, 1],
+      ["Total", "60.00", true, 0],
+    ]);
+  });
+
+  it("marks the rule in use as what is picked now, and replaces it when trying another", () => {
+    const html = cells("Payment Amount: $60.00", "Total: $61.50");
+    const others = [cells("Payment Amount: $50.00", "Total: $51.50")];
+    expect(brief("amount", html, [{ field: "amount", label: "Payment Amount" }], others)).toEqual([
+      ["Payment Amount", "60.00", true, 0],
+      ["Total", "61.50", false, 1],
+    ]);
+  });
+
+  it("offers dates and numbers only of their own kind", () => {
+    const html = cells("Account Number: 7353530-1762-8", "Amount Due: $4.13", "Due Date: 11/04/2026");
+    expect(brief("accountNo", html)).toEqual([["Account Number", "7353530-1762-8", true, 0]]);
+    expect(brief("dueDate", html)).toEqual([["Due Date", "2026-11-04", true, 0]]);
+  });
+
+  it("offers nothing for a value with no words before it", () => {
+    expect(brief("amount", cells("$4.13"))).toEqual([]);
+    expect(brief("amount", "")).toEqual([]);
+  });
+
+  it("says when a label gives more than one value in the email", () => {
+    const html = cells("Charges: $5.00", "Charges: $7.00");
+    const choices = choicesFor(prepare(html), "amount", [], []);
+    expect(choices.map((c) => [c.value.value, c.valuesHere])).toEqual([
+      ["5.00", 2],
+      ["7.00", 2],
+    ]);
+  });
+});
+
+describe("past due", () => {
+  const dueNow = (html: string) => email(html).dueNow;
+
+  it.each([
+    ["Your account is Past Due. Please pay immediately.", "Your account is Past Due"],
+    ["This bill is now overdue.", "This bill is now overdue"],
+    ["Your payment was past-due on 10/05/2026.", "Your payment was past-due"],
+    ["Past Due", "Past Due"],
+    ["Past Due Amount: $25.00", "Past Due Amount: $25.00"],
+    ["Amount Past Due $4.13", "Amount Past Due $4.13"],
+  ])("knows %j says the account is past due", (text, said) => {
+    expect(dueNow(cells(text))).toMatchObject({ from: "email", piece: 0, said });
+  });
+
+  it.each([
+    // In every one of the city's emails: fine print, not a statement about this account.
+    "If your Bill Amount above is enclosed in parentheses (), then no payment is due at this time. All past due amounts are due immediately to avoid penalties.",
+    "Past Due Amount: $0.00",
+    "Avoid late fees: pay before your bill is past due.",
+    "Due Date: 11/04/2026",
+  ])("does not count %j", (text) => {
+    expect(dueNow(cells(text))).toBeNull();
+  });
+
+  it("finds it in the invoice when the email does not say it, and keeps the printed date", () => {
+    const invoice = { pieces: ["Your account is Past Due. Please", "Total Due by", "11/04/2026"], places: [0, 1, 1].map((line) => ({ page: 1, line })), below: [null, null, null] };
+    const x = extract({ subject: "Your invoice is now available", html: cells("Invoice Amount: $62.00"), text: null }, [], invoice);
+    expect(x.dueNow).toEqual({ from: "invoice", piece: 0, start: 0, end: 24, said: "Your account is Past Due" });
+    expect(summarize(x)).toMatchObject({ kind: "bill", amount: "62.00", dueDate: "2026-11-04", dueNow: true });
   });
 });

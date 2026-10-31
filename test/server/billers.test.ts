@@ -73,11 +73,21 @@ describe("billers", () => {
       kind: "bill",
       senders: ["billing@citywater.example", "citywater.example", "help@citywater.example"],
       notes: "Paid on the 1st.",
+      fetchInvoices: true,
       createdAt: "2026-10-29T12:00:00.000Z",
       updatedAt: "2026-10-29T12:00:00.000Z",
     });
     const one = await call(server.app, `/api/billers/${biller.id}`, { cookie });
     expect(await json<Biller>(one)).toEqual(biller);
+  });
+
+  it("gets invoices from links unless told not to, and keeps the choice", async () => {
+    const biller = await created({ ...WATER, fetchInvoices: false });
+    expect(biller.fetchInvoices).toBe(false);
+    const res = await call(server.app, `/api/billers/${biller.id}`, { method: "PUT", cookie, body: { ...WATER, fetchInvoices: true } });
+    expect((await json<Biller>(res)).fetchInvoices).toBe(true);
+    const bad = await call(server.app, "/api/billers", { method: "POST", cookie, body: { ...WATER, name: "Other", fetchInvoices: "yes" } });
+    expect(bad.status).toBe(400);
   });
 
   it("lists billers by name, ignoring capitals", async () => {

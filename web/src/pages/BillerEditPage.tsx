@@ -1,17 +1,33 @@
 // Adding a biller (/billers/new) or changing one (/billers/:id), with delete
 // on the change page. A new biller can be started from a captured email:
 // ?name=...&sender=... fill the form in; on the change page ?addSender=...
-// adds an email's sender to the list. Nothing is saved until Save.
+// adds an email's sender to the list. Nothing is saved until Save. The change
+// page also lists the biller's rules from Fix, each with Remove.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import type { Biller, BillerInput } from "../../../src/shared/api";
+import type { FieldName } from "../../../src/shared/extraction";
 import { api } from "../api";
 import { checkBillerForm, EMPTY_BILLER_FORM, KIND_CHOICES, sendersWith, type BillerForm, type BillerFormErrors } from "../billers";
-import { Button, buttonClasses, Card, ChoiceField, ErrorState, LoadingState, Notice, PageTitle, TextAreaField, TextField } from "../components/ui";
-import { queryKeys, refreshAfterBillerChange, useBiller } from "../queries";
+import {
+  Button,
+  buttonClasses,
+  Card,
+  ChoiceField,
+  DetailRow,
+  ErrorState,
+  LoadingState,
+  Notice,
+  PageTitle,
+  TextAreaField,
+  TextField,
+} from "../components/ui";
+import { plural } from "../format";
+import { FIELD_LABELS } from "../mail/picked";
+import { queryKeys, refreshAfterBillerChange, refreshAfterRuleChange, useBiller, useBillerRules } from "../queries";
 import { NotFoundPage } from "./NotFoundPage";
 
 function BackLink() {
@@ -38,6 +54,7 @@ function BillerFormCard({
 }) {
   const [form, setForm] = useState<BillerForm>(initial);
   const [errors, setErrors] = useState<BillerFormErrors>({});
+  const invoiceHintId = useId();
 
   const text = (key: "name" | "senders" | "notes") => ({
     value: form[key],
@@ -72,6 +89,22 @@ function BillerFormCard({
           {...text("senders")}
         />
         <TextAreaField label="Notes (optional)" rows={3} hint="Anything that helps, like which account this is." {...text("notes")} />
+        <label className="flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            checked={form.fetchInvoices}
+            onChange={(e) => setForm((f) => ({ ...f, fetchInvoices: e.target.checked }))}
+            aria-describedby={invoiceHintId}
+            className="mt-1 size-4 accent-accent"
+          />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">Get the invoice from its link</span>
+            <span id={invoiceHintId} className="block text-sm text-muted">
+              When an email from this biller has a link like "View Invoice" and Proton confirmed who sent it, OurHomeInbox opens the
+              link once and keeps the invoice with the email. Turn this off if the link asks for your password.
+            </span>
+          </span>
+        </label>
         {error ? (
           <Notice tone="error" live>
             {error.message}
@@ -157,6 +190,58 @@ function DeleteBiller({ biller }: { biller: Biller }) {
   );
 }
 
+/** The rules saved with Fix on this biller's emails, each with how often it is used and a Remove button. */
+function BillerRules({ biller }: { biller: Biller }) {
+  const queryClient = useQueryClient();
+  const rules = useBillerRules(biller.id);
+  const remove = useMutation({
+    mutationFn: (field: FieldName) => api.deleteBillerRule(biller.id, field),
+    onSuccess: () => refreshAfterRuleChange(queryClient, biller.id),
+  });
+
+  return (
+    <Card>
+      <h2 className="text-lg font-semibold">Where values are found</h2>
+      <p className="mt-1 text-muted">
+        When you use Fix on an email from <span className="wrap-anywhere">{biller.name}</span>, OurHomeInbox remembers the words the value
+        comes after. Those rules are listed here and used for every email from this biller.
+      </p>
+      {rules.isPending ? <LoadingState label="Loading the rules" /> : null}
+      {rules.isError ? <ErrorState error={rules.error} onRetry={() => void rules.refetch()} /> : null}
+      {remove.isError ? (
+        <Notice tone="error" live className="mt-3">
+          {remove.error.message}
+        </Notice>
+      ) : null}
+      {rules.data && rules.data.rules.length === 0 ? (
+        <p className="mt-3 text-muted">No rules yet. The built-in reader picks out the values on its own. To add one, open an email from this biller and use Fix.</p>
+      ) : null}
+      {rules.data && rules.data.rules.length > 0 ? (
+        <dl className="mt-3 divide-y divide-line">
+          {rules.data.rules.map((rule) => (
+            <DetailRow key={rule.field} label={FIELD_LABELS[rule.field]}>
+              <span className="block font-medium wrap-anywhere">The value after "{rule.label}"</span>
+              <span className="block text-sm text-muted">
+                Used in {rule.usedOn} of {plural(rules.data.emails, "email", "emails")}
+              </span>
+              <Button
+                variant="secondary"
+                className="mt-2 px-3 py-1"
+                aria-label={`Remove the rule for the ${FIELD_LABELS[rule.field].toLowerCase()}`}
+                busy={remove.isPending && remove.variables === rule.field}
+                disabled={remove.isPending}
+                onClick={() => remove.mutate(rule.field)}
+              >
+                Remove
+              </Button>
+            </DetailRow>
+          ))}
+        </dl>
+      ) : null}
+    </Card>
+  );
+}
+
 function EditBiller({ biller, addSender }: { biller: Biller; addSender: string | null }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -170,7 +255,7 @@ function EditBiller({ biller, addSender }: { biller: Biller; addSender: string |
   });
   // Computed once, so the form keeps what was typed while it is open.
   const [{ text, added }] = useState(() => sendersWith(biller.senders, addSender));
-  const initial: BillerForm = { name: biller.name, kind: biller.kind, senders: text, notes: biller.notes };
+  const initial: BillerForm = { name: biller.name, kind: biller.kind, senders: text, notes: biller.notes, fetchInvoices: biller.fetchInvoices };
 
   return (
     <div className="flex flex-col gap-5">
@@ -180,6 +265,7 @@ function EditBiller({ biller, addSender }: { biller: Biller; addSender: string |
         </Notice>
       ) : null}
       <BillerFormCard initial={initial} submitLabel="Save changes" busy={update.isPending} error={update.error} onSubmit={(input) => update.mutate(input)} />
+      <BillerRules biller={biller} />
       <DeleteBiller biller={biller} />
     </div>
   );

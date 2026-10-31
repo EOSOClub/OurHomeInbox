@@ -23,14 +23,15 @@ function Count({ icon, count, one, many }: { icon: ReactNode; count: number; one
   );
 }
 
-/** The email's kind and what the reader picked out, such as "Bill  $4.13, due Nov 4, 2026". */
-function PickedLine({ picked }: { picked: CaptureListItem["picked"] }) {
+/** The email's kind and what the reader picked out, such as "Bill  $4.13, due Nov 4, 2026", and any doubt about it or its sender. */
+function PickedLine({ picked, senderVerified }: { picked: CaptureListItem["picked"]; senderVerified: boolean }) {
   const line = summaryLine(picked);
   return (
     <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
       <span className="rounded border border-line bg-surface-muted px-1.5 text-xs font-medium">{KIND_LABELS[picked.kind]}</span>
       {line ? <span className="font-medium">{line}</span> : <span className="text-muted">Nothing picked out</span>}
       {picked.needsCheck ? <span className="font-medium text-warn">Needs a check</span> : null}
+      {senderVerified ? null : <span className="font-medium text-warn">Sender not verified</span>}
     </p>
   );
 }
@@ -50,7 +51,7 @@ function CaptureRow({ item }: { item: CaptureListItem }) {
           </time>
         </div>
         <p className="mt-0.5 truncate">{subjectDisplay(item.subject)}</p>
-        <PickedLine picked={item.picked} />
+        <PickedLine picked={item.picked} senderVerified={item.senderVerified} />
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
           {item.biller ? (
             <span className="inline-flex min-w-0 items-center gap-1 font-medium text-accent">

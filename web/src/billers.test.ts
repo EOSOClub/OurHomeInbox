@@ -3,14 +3,15 @@
 import { describe, expect, it } from "vitest";
 import { addSenderPathFrom, checkBillerForm, newBillerPathFrom, sendersSummary, sendersWith, type BillerForm } from "./billers";
 
-const good: BillerForm = { name: " City Water ", kind: "bill", senders: "Billing@CityWater.example\n@citywater.example\n", notes: " " };
+const good: BillerForm = { name: " City Water ", kind: "bill", senders: "Billing@CityWater.example\n@citywater.example\n", notes: " ", fetchInvoices: true };
 
 describe("checkBillerForm", () => {
   it("turns a good form into the request, cleaned up", () => {
     expect(checkBillerForm(good)).toEqual({
       errors: {},
-      input: { name: "City Water", kind: "bill", senders: ["billing@citywater.example", "citywater.example"], notes: "" },
+      input: { name: "City Water", kind: "bill", senders: ["billing@citywater.example", "citywater.example"], notes: "", fetchInvoices: true },
     });
+    expect(checkBillerForm({ ...good, fetchInvoices: false }).input?.fetchInvoices).toBe(false);
   });
 
   it("allows no senders yet", () => {
@@ -18,7 +19,7 @@ describe("checkBillerForm", () => {
   });
 
   it("asks for a name and a kind", () => {
-    const { errors, input } = checkBillerForm({ name: " ", kind: null, senders: "", notes: "" });
+    const { errors, input } = checkBillerForm({ name: " ", kind: null, senders: "", notes: "", fetchInvoices: true });
     expect(input).toBeNull();
     expect(errors).toEqual({ name: "Enter the biller's name.", kind: "Choose whether this is a bill or a subscription." });
   });

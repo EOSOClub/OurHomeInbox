@@ -34,10 +34,15 @@ describe("formatDay", () => {
 
 describe("summaryLine", () => {
   it("joins what was found", () => {
-    const base = { kind: "bill", amount: null, dueDate: null, paidDate: null, needsCheck: false } as const;
+    const base = { kind: "bill", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false } as const;
     expect(summaryLine({ ...base, amount: "4.13", dueDate: "2026-11-04" }, "en-US")).toBe("$4.13, due Nov 4, 2026");
     expect(summaryLine({ ...base, kind: "receipt", amount: "60.00", paidDate: "2026-09-09" }, "en-US")).toBe("$60.00, paid Sep 9, 2026");
     expect(summaryLine(base, "en-US")).toBe("");
+  });
+
+  it("says a past due bill is due now, whatever date it prints", () => {
+    const base = { kind: "bill", amount: "62.00", dueDate: "2026-11-04", paidDate: null, dueNow: true, needsCheck: false } as const;
+    expect(summaryLine(base, "en-US")).toBe("$62.00, due now (past due)");
   });
 });
 

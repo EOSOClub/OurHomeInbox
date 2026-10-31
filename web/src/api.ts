@@ -8,13 +8,17 @@ import type {
   Biller,
   BillerInput,
   BillerListResponse,
+  BillerRuleInput,
+  BillerRulesResponse,
   CaptureDetailResponse,
   CaptureListResponse,
+  FieldChoicesResponse,
   LoginRequest,
   SessionResponse,
   SettingsResponse,
   SetupRequest,
 } from "../../src/shared/api";
+import type { FieldName } from "../../src/shared/extraction";
 
 export class ApiRequestError extends Error {
   /** The HTTP status, or 0 when the server could not be reached. */
@@ -101,6 +105,11 @@ export function captureRawUrl(id: string): string {
   return `${captureApiPath(id)}/raw`;
 }
 
+/** The invoice its "View Invoice" link gave (a PDF), as a download. */
+export function captureInvoiceUrl(id: string): string {
+  return `${captureApiPath(id)}/invoice`;
+}
+
 /** `index` is 1-based, as the server expects. */
 export function captureAttachmentUrl(id: string, index: number): string {
   return `${captureApiPath(id)}/attachments/${index}`;
@@ -119,4 +128,9 @@ export const api = {
   createBiller: (body: BillerInput) => request<Biller>("POST", "/api/billers", { body }),
   updateBiller: (id: number, body: BillerInput) => request<Biller>("PUT", `/api/billers/${id}`, { body }),
   deleteBiller: (id: number) => request<void>("DELETE", `/api/billers/${id}`),
+  getChoices: (id: string, field: FieldName, signal?: AbortSignal) =>
+    request<FieldChoicesResponse>("GET", `${captureApiPath(id)}/choices/${field}`, { signal }),
+  getBillerRules: (id: number, signal?: AbortSignal) => request<BillerRulesResponse>("GET", `/api/billers/${id}/rules`, { signal }),
+  saveBillerRule: (id: number, field: FieldName, body: BillerRuleInput) => request<void>("PUT", `/api/billers/${id}/rules/${field}`, { body }),
+  deleteBillerRule: (id: number, field: FieldName) => request<void>("DELETE", `/api/billers/${id}/rules/${field}`),
 };
