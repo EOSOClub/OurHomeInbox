@@ -69,8 +69,10 @@ export function createService(options: ServiceOptions): Service {
     },
   });
 
-  // config.yml's mailboxes, copied into the database once (after first-time setup when there is no household yet).
+  // config.yml's mailboxes, copied into the database once (after first-time setup when there is no household yet),
+  // then, once, mail on disk that no mailbox owns, listed as removed mailboxes to restore.
   mailboxes.importFromConfig(options.config);
+  mailboxes.findLostFolders();
 
   const app = createApp({
     settings,
@@ -81,6 +83,7 @@ export function createService(options: ServiceOptions): Service {
     secretKey: source,
     webRoot: options.webRoot,
     version: options.version,
+    startedAt: now(),
     now: options.now,
   });
   return { app, mailboxes, settings, scheduler, secretKey: source };

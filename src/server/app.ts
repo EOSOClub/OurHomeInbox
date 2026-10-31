@@ -21,6 +21,7 @@ import { mailboxRoutes, type Mailboxes } from "./mailboxes.js";
 import { ruleRoutes } from "./rules.js";
 import { loadSession, requireSignIn, sessionRoutes } from "./session.js";
 import { settingsRoutes, type InstallSettings } from "./settings.js";
+import { statusRoutes } from "./status.js";
 import { webRoutes } from "./web.js";
 
 export interface AppDeps {
@@ -36,6 +37,8 @@ export interface AppDeps {
   /** The folder with the built web app (index.html), or null to serve no UI. */
   webRoot: string | null;
   version: string;
+  /** When this run started, for the Status page. */
+  startedAt: Date;
   /** For tests. */
   now?: () => Date;
 }
@@ -59,7 +62,12 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   });
   const { settings, mailboxes } = deps;
   // First-time setup makes the household that config.yml's mailboxes are copied into.
-  app.route("/api", sessionRoutes({ db: deps.db, now, onSetUp: () => mailboxes.importFromConfig(settings.config) }));
+  app.route("/api", sessionRoutes({ db: deps.db, now, onSetUp: () => {
+        mailboxes.importFromConfig(settings.config);
+        mailboxes.findLostFolders();
+      },
+    }),
+  );
   app.route("/api", captureRoutes({ store: deps.store, db: deps.db, mailboxes }));
   app.route(
     "/api",
@@ -70,6 +78,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     }),
   );
   app.route("/api", mailboxRoutes({ mailboxes, checking: deps.checking }));
+  app.route("/api", statusRoutes({ mailboxes, store: deps.store, checking: deps.checking, version: deps.version, startedAt: deps.startedAt }));
   app.route("/api", billerRoutes({ db: deps.db, now }));
   app.route("/api", ruleRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
   // Before the web app's catch-all, so an unknown API address is a JSON 404, never the app's page.

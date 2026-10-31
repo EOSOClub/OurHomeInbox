@@ -3,6 +3,7 @@
 //   POST   /api/mailboxes        add one (admin)
 //   PUT    /api/mailboxes/:id    change one; a password left out keeps the saved one (admin)
 //   DELETE /api/mailboxes/:id    remove one; its captured mail stays on disk (admin)
+//   POST   /api/mailboxes/:id/restore  bring a removed one back with its mail (admin)
 //   POST   /api/mailboxes/test   try settings before saving them (admin)
 //   POST   /api/mailboxes/check  read every mailbox now
 //
@@ -12,10 +13,15 @@
 // changing the server, port, security or username needs it typed again. Each mailbox's captured mail sits under data/mail/<slug>: the slug is
 // unique across the install and kept when the mailbox is renamed.
 //
+// A removed mailbox is kept, marked removed and without its password, so it
+// can be restored with its mail; until then it is not read and its mail is
+// not shown. Its name stays taken, so adding it again by hand (which would
+// start a new, empty folder) points to restoring it instead.
+//
 // Only an admin may add or change mailboxes for now; household roles come
 // with adding people. Another household's mailbox is "not found".
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
@@ -23,7 +29,7 @@ import type { Config } from "../config.js";
 import { mailboxSlug } from "../config.js";
 import { log } from "../log.js";
 import { captureMailbox, MailboxError, testMailbox, type MailboxToRead } from "../mailbox.js";
-import type { CheckingState, MailboxInfo, MailboxListResponse, MailboxTestResponse } from "../shared/api.js";
+import type { CheckingState, MailboxInfo, MailboxListResponse, MailboxTestResponse, RemovedMailbox } from "../shared/api.js";
 import {
   MAX_MAILBOX_FOLDER,
   MAX_MAILBOX_HOST,
@@ -44,7 +50,50 @@ const NOT_FOUND = "That mailbox was not found. It may have been removed.";
 const ADMIN_ONLY = "Only an admin can change mailboxes.";
 const KEY_CHANGED = "The saved password can no longer be read: the key that protects saved passwords has changed. Enter the password again.";
 const IMPORTED_KEY = "config_mailboxes_imported";
+const LOST_FOLDERS_KEY = "lost_mail_folders_checked";
 const ID = /^[1-9]\d*$/;
+const IN_USE = "removed_at IS NULL";
+
+/** How many emails are captured in a mailbox's folder under data/mail. */
+function capturedEmails(root: string, slug: string): number {
+  let count = 0;
+  for (const validity of subfolders(join(root, slug))) {
+    for (const uid of subfolders(join(root, slug, validity))) {
+      if (existsSync(join(root, slug, validity, uid, "capture.json"))) count++;
+    }
+  }
+  return count;
+}
+
+/** The folders in `dir`, or none when it does not exist. */
+function subfolders(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** The mailbox name and folder recorded in the first email captured in `dir`, if any. */
+function recordedMailbox(dir: string): { name: string; folder: string } | null {
+  for (const validity of subfolders(dir)) {
+    for (const uid of subfolders(join(dir, validity))) {
+      try {
+        const capture = JSON.parse(readFileSync(join(dir, validity, uid, "capture.json"), "utf8")) as { mailbox?: unknown; folder?: unknown };
+        return {
+          name: typeof capture.mailbox === "string" ? capture.mailbox.trim().slice(0, MAX_MAILBOX_NAME) : "",
+          folder: typeof capture.folder === "string" ? capture.folder.trim().slice(0, MAX_MAILBOX_FOLDER) : "",
+        };
+      } catch {
+        // Not captured completely; try the next.
+      }
+    }
+  }
+  return null;
+}
 
 /** Where a mailbox's mail is, for listing it. */
 export interface MailboxPlace {
@@ -70,6 +119,9 @@ interface MailboxRow {
   last_outcome: string | null;
   last_message: string | null;
   last_captured: number | null;
+  last_ok_at: string | null;
+  failing_since: string | null;
+  removed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -160,11 +212,15 @@ export class Mailboxes {
   ) {}
 
   private rows(householdId: number): MailboxRow[] {
-    return this.db.all<MailboxRow>("SELECT * FROM mailboxes WHERE household_id = ? ORDER BY name COLLATE NOCASE, id", householdId);
+    return this.db.all<MailboxRow>(`SELECT * FROM mailboxes WHERE household_id = ? AND ${IN_USE} ORDER BY name COLLATE NOCASE, id`, householdId);
   }
 
   private row(householdId: number, id: number): MailboxRow | undefined {
-    return this.db.get<MailboxRow>("SELECT * FROM mailboxes WHERE id = ? AND household_id = ?", id, householdId);
+    return this.db.get<MailboxRow>(`SELECT * FROM mailboxes WHERE id = ? AND household_id = ? AND ${IN_USE}`, id, householdId);
+  }
+
+  private removedRow(householdId: number, id: number): MailboxRow | undefined {
+    return this.db.get<MailboxRow>("SELECT * FROM mailboxes WHERE id = ? AND household_id = ? AND removed_at IS NOT NULL", id, householdId);
   }
 
   /** The saved password, "" when none is saved, or null when it cannot be read (the key changed). */
@@ -194,6 +250,8 @@ export class Mailboxes {
         row.last_checked_at === null
           ? null
           : { at: row.last_checked_at, ok: row.last_outcome === "ok", message: row.last_message ?? "", captured: row.last_captured ?? 0 },
+      lastOkAt: row.last_ok_at,
+      failingSince: row.failing_since,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -214,7 +272,26 @@ export class Mailboxes {
   }
 
   households(): number[] {
-    return this.db.all<{ household_id: number }>("SELECT DISTINCT household_id FROM mailboxes ORDER BY household_id").map((r) => r.household_id);
+    return this.db
+      .all<{ household_id: number }>(`SELECT DISTINCT household_id FROM mailboxes WHERE ${IN_USE} ORDER BY household_id`)
+      .map((r) => r.household_id);
+  }
+
+  /** The household's removed mailboxes, with how many captured emails each would bring back. */
+  removed(householdId: number): RemovedMailbox[] {
+    return this.db
+      .all<MailboxRow>("SELECT * FROM mailboxes WHERE household_id = ? AND removed_at IS NOT NULL ORDER BY name COLLATE NOCASE, id", householdId)
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        provider: row.provider,
+        folder: row.folder,
+        // Unknown for a mailbox found on disk (see findLostFolders).
+        imap: row.host === "" ? null : { host: row.host, port: row.port, security: row.security, username: row.username },
+        emails: capturedEmails(this.store.root, row.slug),
+        removedAt: row.removed_at!,
+      }));
   }
 
   /** A slug for a new mailbox: its name's, made unique across the install and against folders already on disk. */
@@ -227,14 +304,18 @@ export class Mailboxes {
     }
   }
 
+  /** Removed mailboxes keep their names, so adding one again by hand points to restoring it, with its mail. */
   private nameTaken(householdId: number, name: string, id: number | null): string | null {
-    const same = this.db.get<{ name: string }>(
-      "SELECT name FROM mailboxes WHERE household_id = ? AND name = ? COLLATE NOCASE AND id IS NOT ?",
+    const same = this.db.get<{ name: string; removed_at: string | null }>(
+      "SELECT name, removed_at FROM mailboxes WHERE household_id = ? AND name = ? COLLATE NOCASE AND id IS NOT ?",
       householdId,
       name,
       id,
     );
-    return same ? `There is already a mailbox called ${same.name}.` : null;
+    if (!same) return null;
+    return same.removed_at === null
+      ? `There is already a mailbox called ${same.name}.`
+      : `A removed mailbox is called ${same.name}. Restore it under Removed mailboxes in Settings to get its emails back, or choose another name.`;
   }
 
   create(householdId: number, fields: MailboxFields): { problem: string } | { mailbox: MailboxInfo } {
@@ -296,8 +377,51 @@ export class Mailboxes {
     });
   }
 
+  /** Marks one removed: no longer read or shown, and its password forgotten. Its mail stays on disk for restoring. */
   remove(householdId: number, id: number): boolean {
-    return this.db.run("DELETE FROM mailboxes WHERE id = ? AND household_id = ?", id, householdId).changes > 0;
+    const stamp = this.now().toISOString();
+    return (
+      this.db.run(
+        `UPDATE mailboxes SET removed_at = ?, updated_at = ?, enabled = 0, password_secret = '', failing_since = NULL
+         WHERE id = ? AND household_id = ? AND ${IN_USE}`,
+        stamp,
+        stamp,
+        id,
+        householdId,
+      ).changes > 0
+    );
+  }
+
+  /**
+   * Brings a removed mailbox back with its mail, using the settings given,
+   * as when adding one: its password was not kept, so only one typed now is
+   * used. It keeps its slug, so the emails captured before are its own again
+   * and are not captured a second time.
+   */
+  restore(householdId: number, id: number, fields: MailboxFields): { missing: true } | { problem: string } | { mailbox: MailboxInfo } {
+    return this.db.transaction(() => {
+      const row = this.removedRow(householdId, id);
+      if (!row) return { missing: true as const };
+      const problem = this.nameTaken(householdId, fields.name, id);
+      if (problem) return { problem };
+      this.db.run(
+        `UPDATE mailboxes SET name = ?, provider = ?, host = ?, port = ?, security = ?, username = ?, password_secret = ?, folder = ?, enabled = ?,
+           removed_at = NULL, failing_since = NULL, updated_at = ?
+         WHERE id = ?`,
+        fields.name,
+        fields.provider,
+        fields.host,
+        fields.port,
+        fields.security,
+        fields.username,
+        fields.password ? this.box.seal(fields.password, context(row.slug)) : "",
+        fields.folder,
+        fields.enabled === false ? 0 : 1,
+        this.now().toISOString(),
+        id,
+      );
+      return { mailbox: this.info(this.row(householdId, id)!) };
+    });
   }
 
   /**
@@ -329,20 +453,29 @@ export class Mailboxes {
     };
   }
 
+  /** Saves how a read went. A good read clears "failing since"; a failed one keeps the first failure's time. */
   private recordCheck(id: number, ok: boolean, message: string, captured: number): void {
+    const stamp = this.now().toISOString();
     this.db.run(
-      "UPDATE mailboxes SET last_checked_at = ?, last_outcome = ?, last_message = ?, last_captured = ? WHERE id = ?",
-      this.now().toISOString(),
+      `UPDATE mailboxes SET last_checked_at = ?, last_outcome = ?, last_message = ?, last_captured = ?,
+         last_ok_at = CASE WHEN ? THEN ? ELSE last_ok_at END,
+         failing_since = CASE WHEN ? THEN NULL ELSE COALESCE(failing_since, ?) END
+       WHERE id = ?`,
+      stamp,
       ok ? "ok" : "failed",
       message,
       captured,
+      ok ? 1 : 0,
+      stamp,
+      ok ? 1 : 0,
+      stamp,
       id,
     );
   }
 
   /** Reads every mailbox that is not paused, in every household, and records how each went. */
   async readAll(): Promise<{ read: number; failed: number; captured: number }> {
-    const rows = this.db.all<MailboxRow>("SELECT * FROM mailboxes WHERE enabled = 1 ORDER BY household_id, name COLLATE NOCASE, id");
+    const rows = this.db.all<MailboxRow>(`SELECT * FROM mailboxes WHERE enabled = 1 AND ${IN_USE} ORDER BY household_id, name COLLATE NOCASE, id`);
     let read = 0;
     let failed = 0;
     let captured = 0;
@@ -434,6 +567,56 @@ export class Mailboxes {
     log.info(copied.length ? `Copied ${copied.length} mailbox(es) from config.yml into the database: ${copied.join(", ")}` : "No mailboxes in config.yml to copy");
     return "copied";
   }
+
+  /**
+   * Once, after the copy from config.yml: finds folders of captured mail in
+   * data/mail that no mailbox owns, left by mailboxes removed before removed
+   * ones were kept (they were deleted outright), and lists each as a removed
+   * mailbox so it can be restored with its mail. Its name and folder come
+   * from its emails; its server and login were not kept. A folder does not
+   * say whose it is, so this is only done on an install with one household;
+   * with more, they stay hidden and the log says so.
+   */
+  findLostFolders(): "found" | "waiting" | "done before" {
+    if (this.db.get("SELECT 1 FROM app_state WHERE key = ?", LOST_FOLDERS_KEY)) return "done before";
+    const households = this.db.all<{ id: number }>("SELECT id FROM households ORDER BY id");
+    if (households.length === 0) return "waiting";
+    const found = this.db.transaction(() => {
+      if (this.db.get("SELECT 1 FROM app_state WHERE key = ?", LOST_FOLDERS_KEY)) return null;
+      const lost = subfolders(this.store.root).filter(
+        (slug) => mailboxSlug(slug) === slug && !this.db.get("SELECT 1 FROM mailboxes WHERE slug = ?", slug) && capturedEmails(this.store.root, slug) > 0,
+      );
+      const names: string[] = [];
+      const household = households.length === 1 ? households[0]!.id : null;
+      const stamp = this.now().toISOString();
+      for (const slug of household === null ? [] : lost) {
+        const recorded = recordedMailbox(join(this.store.root, slug));
+        const base = recorded && mailboxSlug(recorded.name) !== "" ? recorded.name : slug;
+        let name = base;
+        for (let n = 1; this.nameTaken(household!, name, null); n++) name = `${base.slice(0, MAX_MAILBOX_NAME - 12)} (found${n === 1 ? "" : ` ${n}`})`;
+        this.db.run(
+          `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, password_secret, folder, enabled, removed_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, '', 0, 'none', '', '', ?, 0, ?, ?, ?)`,
+          household,
+          name,
+          slug,
+          PROVIDERS[0],
+          recorded?.folder ?? "",
+          stamp,
+          stamp,
+          stamp,
+        );
+        names.push(`"${name}" (${capturedEmails(this.store.root, slug)} emails in ${slug})`);
+      }
+      this.db.run("INSERT INTO app_state (key, value) VALUES (?, ?)", LOST_FOLDERS_KEY, JSON.stringify({ at: stamp, found: names.length }));
+      return { names, hidden: household === null ? lost : [] };
+    });
+    if (found === null) return "done before";
+    if (found.names.length) log.info(`Found ${found.names.length} removed mailbox(es) on disk, listed in Settings to restore: ${found.names.join(", ")}`);
+    if (found.hidden.length)
+      log.warn(`${found.hidden.length} folder(s) of mail in data/mail belong to no mailbox, and with more than one household it is not known whose they are: ${found.hidden.join(", ")}`);
+    return "found";
+  }
 }
 
 // ---- Routes ------------------------------------------------------------------
@@ -470,7 +653,12 @@ export function mailboxRoutes(deps: MailboxDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
   app.get("/mailboxes", (c) => {
-    const body: MailboxListResponse = { mailboxes: mailboxes.list(householdOf(c)), checking: checking.state(), canEdit: isAdmin(c) };
+    const body: MailboxListResponse = {
+      mailboxes: mailboxes.list(householdOf(c)),
+      removed: mailboxes.removed(householdOf(c)),
+      checking: checking.state(),
+      canEdit: isAdmin(c),
+    };
     return c.json(body);
   });
 
@@ -515,6 +703,16 @@ export function mailboxRoutes(deps: MailboxDeps): Hono<AppEnv> {
     const id = mailboxId(c);
     if (id === null || !mailboxes.remove(householdOf(c), id)) return apiError(c, 404, NOT_FOUND);
     return c.body(null, 204);
+  });
+
+  app.post("/mailboxes/:id/restore", jsonBody(mailboxSchema), (c) => {
+    if (!isAdmin(c)) return apiError(c, 403, ADMIN_ONLY);
+    const id = mailboxId(c);
+    if (id === null) return apiError(c, 404, NOT_FOUND);
+    const result = mailboxes.restore(householdOf(c), id, c.req.valid("json"));
+    if ("missing" in result) return apiError(c, 404, NOT_FOUND);
+    if ("problem" in result) return apiError(c, 409, result.problem);
+    return c.json(result.mailbox);
   });
 
   return app;

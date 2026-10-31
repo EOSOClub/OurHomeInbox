@@ -2,7 +2,7 @@
 // rules the server applies), the choices offered, and how a mailbox's last
 // read and the reading schedule are put in words.
 
-import type { CheckingState, MailboxInfo, MailboxInput, MailboxTestRequest } from "../../src/shared/api";
+import type { CheckingState, MailboxInfo, MailboxInput, MailboxTestRequest, RemovedMailbox } from "../../src/shared/api";
 import {
   MAX_MAILBOX_FOLDER,
   MAX_MAILBOX_HOST,
@@ -72,6 +72,24 @@ export function formFromMailbox(mailbox: MailboxInfo): MailboxForm {
     folder: mailbox.folder,
     enabled: mailbox.enabled,
   };
+}
+
+/** The form for restoring a removed mailbox: what was kept of it. Its password was not kept, and a mailbox found on disk has no server yet. */
+export function formFromRemoved(mailbox: RemovedMailbox): MailboxForm {
+  return {
+    ...EMPTY_MAILBOX_FORM,
+    name: mailbox.name,
+    provider: mailbox.provider,
+    folder: mailbox.folder,
+    ...(mailbox.imap
+      ? { host: mailbox.imap.host, port: String(mailbox.imap.port), security: mailbox.imap.security, username: mailbox.imap.username }
+      : {}),
+  };
+}
+
+/** "36 emails", for a removed mailbox's captured mail. */
+export function emailCount(count: number): string {
+  return count === 1 ? "1 email" : `${count} emails`;
 }
 
 const HOST = /^[A-Za-z0-9._:[\]-]+$/;

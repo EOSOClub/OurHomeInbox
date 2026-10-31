@@ -1,8 +1,10 @@
-// Adding a mailbox (/settings/mailboxes/new) or changing one
-// (/settings/mailboxes/:id), with "Test connection" to try the settings first
-// (it lists the mailbox's folders to choose from) and remove on the change
-// page. A saved password is never shown; leaving the box empty keeps it, but
-// only for the same server and login: a changed one needs it typed again.
+// Adding a mailbox (/settings/mailboxes/new), changing one
+// (/settings/mailboxes/:id) or restoring a removed one with its mail
+// (/settings/mailboxes/removed/:id), with "Test connection" to try the
+// settings first (it lists the mailbox's folders to choose from) and remove
+// on the change page. A saved password is never shown; leaving the box empty
+// keeps it, but only for the same server and login: a changed one needs it
+// typed again. A removed mailbox's password was not kept.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, PlugZap } from "lucide-react";
@@ -14,8 +16,10 @@ import { Button, buttonClasses, Card, ChoiceField, ErrorState, LoadingState, Not
 import {
   checkConnection,
   checkMailboxForm,
+  emailCount,
   EMPTY_MAILBOX_FORM,
   formFromMailbox,
+  formFromRemoved,
   PROVIDER_LABELS,
   sameServer,
   SECURITY_CHOICES,
@@ -247,8 +251,8 @@ function RemoveMailbox({ mailbox }: { mailbox: MailboxInfo }) {
     <Card>
       <h2 className="text-lg font-semibold">Remove this mailbox</h2>
       <p className="mt-1 text-muted">
-        OurHomeInbox stops reading it. Its captured emails stay on disk but are no longer shown. To stop reading it for a while, pause it
-        above instead.
+        OurHomeInbox stops reading it and forgets its password. Its captured emails stay on disk but are no longer shown, until you
+        restore it from Settings. To stop reading it for a while, pause it above instead.
       </p>
       {remove.isError ? (
         <Notice tone="error" live className="mt-3">
@@ -301,11 +305,62 @@ function EditMailbox({ mailbox }: { mailbox: MailboxInfo }) {
   );
 }
 
-export function EditMailboxPage() {
+/** The mailbox id in the address, or null when it is not one. */
+function useMailboxId(): number | null {
   const { id: idText = "" } = useParams();
   const id = /^[1-9]\d*$/.test(idText) ? Number(idText) : null;
+  return id !== null && Number.isSafeInteger(id) ? id : null;
+}
+
+export function RestoreMailboxPage() {
+  const id = useMailboxId();
   const mailboxes = useMailboxes();
-  if (id === null || !Number.isSafeInteger(id)) return <NotFoundPage />;
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const restore = useMutation({
+    mutationFn: (input: MailboxInput) => api.restoreMailbox(id!, input),
+    onSuccess: () => {
+      refreshAfterMailboxChange(queryClient);
+      void navigate("/settings");
+    },
+  });
+  if (id === null) return <NotFoundPage />;
+  const removed = mailboxes.data?.removed.find((m) => m.id === id);
+  if (mailboxes.data && !removed) return <NotFoundPage />;
+  return (
+    <div>
+      <BackLink />
+      <PageTitle description="Brings this mailbox back as it was, with the emails it captured before. They are not captured again.">
+        {removed ? <span className="wrap-anywhere">Restore {removed.name}</span> : "Restore a mailbox"}
+      </PageTitle>
+      {mailboxes.isPending ? <LoadingState label="Loading this mailbox" /> : null}
+      {mailboxes.isError ? <ErrorState error={mailboxes.error} onRetry={() => void mailboxes.refetch()} /> : null}
+      {removed ? (
+        <div className="flex flex-col gap-5">
+          <Notice tone="info">
+            {emailCount(removed.emails)} come back when you restore it.{" "}
+            {removed.imap
+              ? "Its password was not kept: enter it again."
+              : "It was removed before removed mailboxes were kept, so its server and login are not known: enter them and its password again."}
+          </Notice>
+          <MailboxFormCard
+            initial={formFromRemoved(removed)}
+            saved={null}
+            submitLabel="Restore mailbox"
+            busy={restore.isPending}
+            error={restore.error}
+            onSubmit={(input) => restore.mutate(input)}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function EditMailboxPage() {
+  const id = useMailboxId();
+  const mailboxes = useMailboxes();
+  if (id === null) return <NotFoundPage />;
   const mailbox = mailboxes.data?.mailboxes.find((m) => m.id === id);
   if (mailboxes.data && !mailbox) return <NotFoundPage />;
   return (

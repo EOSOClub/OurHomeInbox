@@ -1,19 +1,20 @@
-// Settings: the household's mailboxes (with how each last read went and
-// "Check mail now"), your own password, and the install's settings from
+// Settings: the household's mailboxes (with how each last read went,
+// "Check mail now", and removed ones to restore), your own password, and the install's settings from
 // config.yml (how often mail is read and the log level, which an admin can
 // change or reload without a restart). A password is never shown.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CircleCheck, Plus, RefreshCw, RotateCw, TriangleAlert } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { CircleCheck, Plus, RotateCw, TriangleAlert } from "lucide-react";
+import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
-import type { MailboxInfo, SessionUser, SettingsResponse } from "../../../src/shared/api";
+import type { MailboxInfo, RemovedMailbox, SessionUser, SettingsResponse } from "../../../src/shared/api";
 import { MIN_PASSWORD_LENGTH } from "../../../src/shared/api";
 import { MAX_CAPTURE_MINUTES, MIN_CAPTURE_MINUTES, type LogLevel } from "../../../src/shared/settings";
 import { api } from "../api";
+import { CheckMailNow, useRefreshWhenReadFinishes } from "../components/CheckMail";
 import { Button, buttonClasses, Card, ChoiceField, DetailRow, ErrorState, LoadingState, Notice, PageTitle, TextField } from "../components/ui";
-import { checkingLine, lastCheckLine, LOG_LEVEL_CHOICES, PROVIDER_LABELS, SECURITY_CHOICES } from "../mailboxes";
-import { queryKeys, refreshAfterMailboxChange, useMailboxes, useSession, useSettings } from "../queries";
+import { checkingLine, emailCount, lastCheckLine, LOG_LEVEL_CHOICES, PROVIDER_LABELS, SECURITY_CHOICES } from "../mailboxes";
+import { queryKeys, useMailboxes, useSession, useSettings } from "../queries";
 
 function PasswordState({ mailbox }: { mailbox: MailboxInfo }) {
   if (mailbox.imap.passwordSet) {
@@ -65,21 +66,8 @@ function MailboxRow({ mailbox, canEdit }: { mailbox: MailboxInfo; canEdit: boole
 
 function MailboxesCard() {
   const mailboxes = useMailboxes();
-  const queryClient = useQueryClient();
-  const check = useMutation({
-    mutationFn: api.checkMail,
-    onSuccess: (checking) => queryClient.setQueryData(queryKeys.mailboxes, (old: typeof mailboxes.data) => (old ? { ...old, checking } : old)),
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: queryKeys.mailboxes }),
-  });
-
   // When a read finishes, the mail list and each mailbox's result are fresh.
-  const finished = mailboxes.data?.checking.lastFinishedAt;
-  const seen = useRef(finished);
-  useEffect(() => {
-    if (finished && finished !== seen.current) refreshAfterMailboxChange(queryClient);
-    seen.current = finished;
-  }, [finished, queryClient]);
-
+  useRefreshWhenReadFinishes(mailboxes.data?.checking.lastFinishedAt);
   const data = mailboxes.data;
   return (
     <Card>
@@ -100,25 +88,16 @@ function MailboxesCard() {
             <p className="text-sm text-muted" role="status">
               {checkingLine(data.checking)}
             </p>
-            <Button
-              variant="secondary"
-              className="px-3 py-1"
-              busy={check.isPending || data.checking.running}
-              disabled={data.mailboxes.length === 0}
-              onClick={() => check.mutate()}
-            >
-              <RefreshCw aria-hidden className="size-4" />
-              Check mail now
-            </Button>
+            <CheckMailNow checking={data.checking} disabled={data.mailboxes.length === 0} />
           </div>
-          {check.isError ? (
-            <Notice tone="error" live className="mt-3">
-              {check.error.message}
-            </Notice>
-          ) : null}
           {data.mailboxes.length === 0 ? (
             <p className="mt-4 text-muted">
-              No mailboxes yet.{data.canEdit ? " Add the one your bills arrive in." : " Ask an admin to add one."}
+              No mailboxes yet.
+              {data.canEdit
+                ? data.removed.length > 0
+                  ? " Add the one your bills arrive in, or restore a removed one below."
+                  : " Add the one your bills arrive in."
+                : " Ask an admin to add one."}
             </p>
           ) : (
             <ul className="mt-4 divide-y divide-line border-t border-line pt-4">
@@ -127,9 +106,39 @@ function MailboxesCard() {
               ))}
             </ul>
           )}
+          {data.removed.length > 0 ? <RemovedMailboxes removed={data.removed} canEdit={data.canEdit} /> : null}
         </>
       ) : null}
     </Card>
+  );
+}
+
+/** Removed mailboxes, kept so they can come back with their mail. */
+function RemovedMailboxes({ removed, canEdit }: { removed: RemovedMailbox[]; canEdit: boolean }) {
+  return (
+    <section className="mt-5 border-t border-line pt-4" aria-labelledby="removed-mailboxes">
+      <h3 id="removed-mailboxes" className="font-semibold">
+        Removed mailboxes
+      </h3>
+      <p className="mt-1 text-sm text-muted">Not read, and their emails are not shown. Restoring one brings its emails back.</p>
+      <ul className="mt-3 divide-y divide-line">
+        {removed.map((mailbox) => (
+          <li key={mailbox.id} className="flex flex-wrap items-center justify-between gap-2 py-3 first:pt-0 last:pb-0">
+            <div className="min-w-0">
+              <p className="font-medium wrap-anywhere">{mailbox.name}</p>
+              <p className="text-sm text-muted wrap-anywhere">
+                {emailCount(mailbox.emails)} kept{mailbox.folder ? <>, from <span className="font-mono">{mailbox.folder}</span></> : null}
+              </p>
+            </div>
+            {canEdit ? (
+              <Link to={`/settings/mailboxes/removed/${mailbox.id}`} className={buttonClasses("secondary", "px-3 py-1")}>
+                Restore <span className="sr-only">{mailbox.name}</span>
+              </Link>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

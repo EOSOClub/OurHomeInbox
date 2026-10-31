@@ -24,6 +24,8 @@ const saved: MailboxInfo = {
   imap: { host: "protonmail-bridge", port: 143, security: "none", username: "u@example.com", passwordSet: true, passwordProblem: null },
   enabled: true,
   lastCheck: null,
+  lastOkAt: null,
+  failingSince: null,
   createdAt: "2026-10-30T00:00:00Z",
   updatedAt: "2026-10-30T00:00:00Z",
 };

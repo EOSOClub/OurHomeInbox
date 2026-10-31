@@ -25,6 +25,7 @@ import type {
   SettingsInput,
   SettingsResponse,
   SetupRequest,
+  StatusResponse,
 } from "../../src/shared/api";
 import type { FieldName } from "../../src/shared/extraction";
 
@@ -138,8 +139,10 @@ export const api = {
   createMailbox: (body: MailboxInput) => request<MailboxInfo>("POST", "/api/mailboxes", { body }),
   updateMailbox: (id: number, body: MailboxInput) => request<MailboxInfo>("PUT", `/api/mailboxes/${id}`, { body }),
   deleteMailbox: (id: number) => request<void>("DELETE", `/api/mailboxes/${id}`),
+  restoreMailbox: (id: number, body: MailboxInput) => request<MailboxInfo>("POST", `/api/mailboxes/${id}/restore`, { body }),
   testMailbox: (body: MailboxTestRequest) => request<MailboxTestResponse>("POST", "/api/mailboxes/test", { body }),
   checkMail: () => request<CheckingState>("POST", "/api/mailboxes/check"),
+  getStatus: (signal?: AbortSignal) => request<StatusResponse>("GET", "/api/status", { signal }),
   listBillers: (signal?: AbortSignal) => request<BillerListResponse>("GET", "/api/billers", { signal }),
   getBiller: (id: number, signal?: AbortSignal) => request<Biller>("GET", `/api/billers/${id}`, { signal }),
   createBiller: (body: BillerInput) => request<Biller>("POST", "/api/billers", { body }),

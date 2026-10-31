@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 // The Settings page and the mailbox pages against a stand-in server: what an
 // admin and a member see, "Check mail now", saving the install's settings,
-// changing your password, and trying a mailbox's settings before saving.
+// changing your password, trying a mailbox's settings before saving, and
+// restoring a removed mailbox.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MailboxInfo, MailboxListResponse, SessionResponse, SettingsResponse } from "../../../src/shared/api";
-import { EditMailboxPage, NewMailboxPage } from "./MailboxEditPage";
+import type { MailboxInfo, MailboxListResponse, RemovedMailbox, SessionResponse, SettingsResponse } from "../../../src/shared/api";
+import { EditMailboxPage, NewMailboxPage, RestoreMailboxPage } from "./MailboxEditPage";
 import { SettingsPage } from "./SettingsPage";
 
 afterEach(() => {
@@ -25,6 +26,8 @@ const MAILBOX: MailboxInfo = {
   imap: { host: "host.docker.internal", port: 1144, security: "none", username: "bills@example.com", passwordSet: true, passwordProblem: null },
   enabled: true,
   lastCheck: { at: "2026-10-30T12:00:00Z", ok: true, message: "0 new, 36 captured before", captured: 0 },
+  lastOkAt: "2026-10-30T12:00:00Z",
+  failingSince: null,
   createdAt: "2026-10-30T00:00:00Z",
   updatedAt: "2026-10-30T00:00:00Z",
 };
@@ -46,7 +49,7 @@ function reply(status: number, body?: unknown): Response {
 }
 
 /** A stand-in server; records what was sent. */
-function stub(options: { admin?: boolean; running?: boolean } = {}) {
+function stub(options: { admin?: boolean; running?: boolean; removed?: RemovedMailbox[] } = {}) {
   const admin = options.admin ?? true;
   const sent: Array<[string, string, unknown]> = [];
   const session: SessionResponse = {
@@ -55,6 +58,7 @@ function stub(options: { admin?: boolean; running?: boolean } = {}) {
   };
   const list: MailboxListResponse = {
     mailboxes: [MAILBOX],
+    removed: options.removed ?? [],
     checking: { everyMinutes: 15, running: options.running ?? false, lastStartedAt: null, lastFinishedAt: null, nextAt: null },
     canEdit: admin,
   };
@@ -95,6 +99,7 @@ function show(path: string) {
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/settings/mailboxes/new" element={<NewMailboxPage />} />
           <Route path="/settings/mailboxes/:id" element={<EditMailboxPage />} />
+          <Route path="/settings/mailboxes/removed/:id" element={<RestoreMailboxPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -203,5 +208,69 @@ describe("a mailbox's page", () => {
     show("/settings/mailboxes/new");
     fireEvent.click(await screen.findByRole("button", { name: "Add mailbox" }));
     expect(screen.getByText("Enter the IMAP password.")).toBeTruthy();
+  });
+});
+
+const REMOVED: RemovedMailbox = {
+  id: 9,
+  name: "Old bills",
+  slug: "old-bills",
+  provider: "proton-bridge",
+  folder: "Labels/Bill",
+  imap: { host: "host.docker.internal", port: 1144, security: "none", username: "bills@example.com" },
+  emails: 36,
+  removedAt: "2026-10-31T02:33:00Z",
+};
+
+describe("a removed mailbox", () => {
+  it("is listed in Settings with the emails it would bring back", async () => {
+    stub({ removed: [REMOVED] });
+    show("/settings");
+    const removed = await card("Removed mailboxes");
+    expect(removed.textContent).toContain("Old bills");
+    expect(removed.textContent).toContain("36 emails kept, from Labels/Bill");
+    expect(within(removed).getByRole("link", { name: "Restore Old bills" }).getAttribute("href")).toBe("/settings/mailboxes/removed/9");
+  });
+
+  it("is listed for a member too, without a way to restore it", async () => {
+    stub({ admin: false, removed: [REMOVED] });
+    show("/settings");
+    const removed = await card("Removed mailboxes");
+    expect(removed.textContent).toContain("Old bills");
+    expect(within(removed).queryByRole("link")).toBeNull();
+  });
+
+  it("is restored with what was kept and the password typed again", async () => {
+    const sent = stub({ removed: [REMOVED] });
+    show("/settings/mailboxes/removed/9");
+    expect(await screen.findByText(/36 emails come back when you restore it\. Its password was not kept: enter it again\./)).toBeTruthy();
+    expect((screen.getByLabelText("IMAP server") as HTMLInputElement).value).toBe("host.docker.internal");
+    expect((screen.getByLabelText("Folder") as HTMLInputElement).value).toBe("Labels/Bill");
+    fireEvent.click(screen.getByRole("button", { name: "Restore mailbox" }));
+    expect(screen.getByText("Enter the IMAP password.")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "bridge password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Restore mailbox" }));
+    await waitFor(() =>
+      expect(sent).toContainEqual([
+        "POST",
+        "/api/mailboxes/9/restore",
+        { name: "Old bills", provider: "proton-bridge", host: "host.docker.internal", port: 1144, security: "none", username: "bills@example.com", password: "bridge password", folder: "Labels/Bill", enabled: true },
+      ]),
+    );
+  });
+
+  it("found on disk asks for its server and login too", async () => {
+    stub({ removed: [{ ...REMOVED, imap: null }] });
+    show("/settings/mailboxes/removed/9");
+    expect(await screen.findByText(/its server and login are not known/)).toBeTruthy();
+    expect((screen.getByLabelText("IMAP server") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Old bills");
+  });
+
+  it("that is not there shows not found", async () => {
+    stub({ removed: [REMOVED] });
+    show("/settings/mailboxes/removed/10");
+    expect(await screen.findByRole("heading", { name: /not found|nothing here/i })).toBeTruthy();
   });
 });

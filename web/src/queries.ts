@@ -14,6 +14,7 @@ export const queryKeys = {
   choices: (id: string, field: FieldName) => ["captures", id, "choices", field] as const,
   settings: ["settings"] as const,
   mailboxes: ["mailboxes"] as const,
+  status: ["status"] as const,
   billers: ["billers"] as const,
   biller: (id: number) => ["billers", id] as const,
   billerRules: (id: number) => ["billers", id, "rules"] as const,
@@ -88,10 +89,20 @@ export function useMailboxes() {
   });
 }
 
-/** After a mailbox is added, changed or removed, or mail was read: the mailboxes, and every email (which mailboxes are shown). */
+/** After a mailbox is added, changed or removed, or mail was read: the mailboxes, the status, and every email (which mailboxes are shown). */
 export function refreshAfterMailboxChange(client: QueryClient): void {
   void client.invalidateQueries({ queryKey: queryKeys.mailboxes });
+  void client.invalidateQueries({ queryKey: queryKeys.status });
   void client.invalidateQueries({ queryKey: queryKeys.captures });
+}
+
+/** Whether OurHomeInbox is working. Asked again every few seconds while mail is being read, else every minute. */
+export function useStatus() {
+  return useQuery({
+    queryKey: queryKeys.status,
+    queryFn: ({ signal }) => api.getStatus(signal),
+    refetchInterval: (query) => (query.state.data?.checking.running ? 2000 : 60_000),
+  });
 }
 
 export function useBillers() {

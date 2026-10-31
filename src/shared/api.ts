@@ -16,6 +16,7 @@
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/attachments/:index   one attachment (1-based), as a download
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/choices/:field       FieldChoicesResponse; 409 when no biller matches
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/invoice              the invoice its link gave (PDF), as a download
+//   GET    /api/status                       StatusResponse
 //   PUT    /api/account/password             PasswordChangeRequest -> 204 (signs out your other sessions)
 //   GET    /api/settings                     SettingsResponse
 //   PUT    /api/settings                     SettingsInput -> SettingsResponse (admin; written to config.yml)
@@ -23,7 +24,8 @@
 //   GET    /api/mailboxes                    MailboxListResponse
 //   POST   /api/mailboxes                    MailboxInput -> MailboxInfo (201; admin)
 //   PUT    /api/mailboxes/:id                MailboxInput -> MailboxInfo (admin)
-//   DELETE /api/mailboxes/:id                -> 204 (admin; its captured mail stays on disk)
+//   DELETE /api/mailboxes/:id                -> 204 (admin; its captured mail stays on disk, to restore)
+//   POST   /api/mailboxes/:id/restore        MailboxInput -> MailboxInfo (admin; a removed one, with its mail)
 //   POST   /api/mailboxes/test               MailboxTestRequest -> MailboxTestResponse (admin)
 //   POST   /api/mailboxes/check              -> CheckingState (reads every mailbox now)
 //   GET    /api/billers                      BillerListResponse
@@ -42,7 +44,7 @@
 import type { BillerKind } from "./billers.js";
 import type { Capture, CapturedAddress } from "./capture.js";
 import type { BillerRule, Extraction, ExtractionSummary, FieldChoice, FieldName } from "./extraction.js";
-import type { InvoiceInfo } from "./invoice.js";
+import type { InvoiceInfo, InvoiceOutcome } from "./invoice.js";
 import type { SenderCheck } from "./sender.js";
 import type { LogLevel, Provider, Security } from "./settings.js";
 
@@ -174,6 +176,10 @@ export interface MailboxInfo {
   enabled: boolean;
   /** How the last read went, or null before the first. */
   lastCheck: { at: string; ok: boolean; message: string; captured: number } | null;
+  /** When it was last read without a problem, or null when never. */
+  lastOkAt: string | null;
+  /** When it started failing every read (null while reads work). */
+  failingSince: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -189,8 +195,24 @@ export interface CheckingState {
   nextAt: string | null;
 }
 
+/** A removed mailbox, kept so it can be restored with its captured mail. Its password was not kept. */
+export interface RemovedMailbox {
+  id: number;
+  name: string;
+  slug: string;
+  provider: Provider;
+  folder: string;
+  /** Its server and login, or null when they are not known (a mailbox removed before removed ones were kept, found on disk). */
+  imap: { host: string; port: number; security: Security; username: string } | null;
+  /** How many captured emails come back when it is restored. */
+  emails: number;
+  removedAt: string;
+}
+
 export interface MailboxListResponse {
   mailboxes: MailboxInfo[];
+  /** Removed mailboxes that can be restored, with their mail. */
+  removed: RemovedMailbox[];
   checking: CheckingState;
   /** True when the signed-in person may add and change mailboxes. */
   canEdit: boolean;
@@ -254,6 +276,48 @@ export interface SettingsResponse {
 export interface SettingsInput {
   logLevel: LogLevel;
   captureEveryMinutes: number;
+}
+
+/** One email's invoice link, as tried. */
+export interface InvoiceActivity {
+  /** The email, as CaptureListItem.id. */
+  captureId: string;
+  subject: string | null;
+  /** Who sent it: the first From name, else its address. */
+  sender: string;
+  outcome: InvoiceOutcome;
+  reason: string;
+  triedAt: string;
+  /** True while a passing failure will be tried again. */
+  retrying: boolean;
+}
+
+/** A warning or error from the log. */
+export interface StatusProblem {
+  at: string;
+  level: "warn" | "error";
+  message: string;
+}
+
+/** Whether OurHomeInbox is working, for the Status page. */
+export interface StatusResponse {
+  version: string;
+  /** When this run of OurHomeInbox started. */
+  startedAt: string;
+  checking: CheckingState;
+  /** The household's mailboxes, with how each last read went. */
+  mailboxes: MailboxInfo[];
+  invoices: {
+    /** The household's emails by what their invoice link gave. "failed" counts only links that will not be tried again. */
+    counts: Record<InvoiceOutcome, number>;
+    /** Links that failed for a passing reason and will be tried again. */
+    retrying: number;
+    /** The latest tries, newest first. */
+    recent: InvoiceActivity[];
+  };
+  /** Recent warnings and errors since the start, newest first. Admins only (they can name any household's mailbox); null for others. */
+  problems: StatusProblem[] | null;
+  canEdit: boolean;
 }
 
 /** Changing your own sign-in password. Signs out your other sessions. */

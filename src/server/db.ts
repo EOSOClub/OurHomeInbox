@@ -115,6 +115,17 @@ const MIGRATIONS: string[] = [
     value text NOT NULL
   );
   `,
+  // For the Status page: when a mailbox was last read without a problem, and
+  // since when it has failed every time (cleared by a good read).
+  `
+  ALTER TABLE mailboxes ADD COLUMN last_ok_at text;
+  ALTER TABLE mailboxes ADD COLUMN failing_since text;
+  `,
+  // A removed mailbox is kept, without its password, so it can be restored
+  // with its captured mail (its slug stays taken). NULL while it is in use.
+  `
+  ALTER TABLE mailboxes ADD COLUMN removed_at text;
+  `,
 ];
 
 /** The schema version this code expects. */

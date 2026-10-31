@@ -80,6 +80,8 @@ describe("the mailboxes in config.yml", () => {
         imap: { host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me", passwordSet: true, passwordProblem: null },
         enabled: true,
         lastCheck: null,
+        lastOkAt: null,
+        failingSince: null,
         createdAt: "2026-10-29T12:00:00.000Z",
         updatedAt: "2026-10-29T12:00:00.000Z",
       },
@@ -178,6 +180,61 @@ describe("adding and changing a mailbox", () => {
     expect((await send("DELETE", `/api/mailboxes/${mailbox!.id}`)).status).toBe(404);
   });
 
+  it("keeps a removed one, without its password, to restore with its mail", async () => {
+    await saveEmail(server.store, rawEmail({ subject: "Water bill" }), { uid: 1 });
+    const [mailbox] = (await list()).mailboxes;
+    server.clock.now = new Date("2026-10-31T02:33:00Z");
+    await send("DELETE", `/api/mailboxes/${mailbox!.id}`);
+    const removedRow = () => server.db.get<{ password_secret: string; enabled: number }>("SELECT password_secret, enabled FROM mailboxes WHERE id = ?", mailbox!.id)!;
+    expect(removedRow()).toEqual({ password_secret: "", enabled: 0 });
+    const after = await list();
+    expect(after.mailboxes).toEqual([]);
+    expect(after.removed).toEqual([
+      {
+        id: mailbox!.id,
+        name: "Proton bills",
+        slug: "proton-bills",
+        provider: "proton-bridge",
+        folder: "Folders/Bills",
+        imap: { host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me" },
+        emails: 1,
+        removedAt: "2026-10-31T02:33:00.000Z",
+      },
+    ]);
+    // Not changed, read or tried as a mailbox while removed.
+    expect((await send("PUT", `/api/mailboxes/${mailbox!.id}`, WATER)).status).toBe(404);
+    expect((await send("POST", "/api/mailboxes/test", { ...WATER, id: mailbox!.id, password: undefined })).status).toBe(404);
+    expect(server.service.mailboxes.households()).toEqual([]);
+
+    // Adding it again by hand would start an empty folder, so it points to restoring it.
+    const again = await send("POST", "/api/mailboxes", { ...WATER, name: "proton bills" });
+    expect(again.status).toBe(409);
+    expect((await json<ApiError>(again)).error).toBe(
+      "A removed mailbox is called Proton bills. Restore it under Removed mailboxes in Settings to get its emails back, or choose another name.",
+    );
+
+    const restored = await send("POST", `/api/mailboxes/${mailbox!.id}/restore`, { ...WATER, name: "Proton bills" });
+    expect(restored.status).toBe(200);
+    expect(await json<MailboxInfo>(restored)).toMatchObject({ name: "Proton bills", slug: "proton-bills", folder: "Folders/Water", enabled: true, imap: { passwordSet: true } });
+    const now = await list();
+    expect(now.removed).toEqual([]);
+    expect(now.mailboxes.map((m) => m.slug)).toEqual(["proton-bills"]);
+    const { captures } = await json<CaptureListResponse>(await get("/api/captures"));
+    expect(captures.map((c) => c.subject)).toEqual(["Water bill"]);
+    expect((await send("POST", `/api/mailboxes/${mailbox!.id}/restore`, WATER)).status).toBe(404);
+  });
+
+  it("restores a removed one under a new name when its old one is taken, and refuses a name in use", async () => {
+    const [mailbox] = (await list()).mailboxes;
+    await send("DELETE", `/api/mailboxes/${mailbox!.id}`);
+    await send("POST", "/api/mailboxes", WATER);
+    const clash = await send("POST", `/api/mailboxes/${mailbox!.id}/restore`, WATER);
+    expect(clash.status).toBe(409);
+    expect((await json<ApiError>(clash)).error).toBe("There is already a mailbox called Water bills.");
+    const restored = await send("POST", `/api/mailboxes/${mailbox!.id}/restore`, { ...WATER, name: "Old bills" });
+    expect(await json<MailboxInfo>(restored)).toMatchObject({ name: "Old bills", slug: "proton-bills" });
+  });
+
   it("lets only an admin change mailboxes; a member sees them, without passwords", async () => {
     const member = await memberCookie();
     const seen = await list(member);
@@ -188,6 +245,7 @@ describe("adding and changing a mailbox", () => {
       ["POST", "/api/mailboxes", WATER],
       ["PUT", `/api/mailboxes/${id}`, WATER],
       ["DELETE", `/api/mailboxes/${id}`, undefined],
+      ["POST", `/api/mailboxes/${id}/restore`, WATER],
       ["POST", "/api/mailboxes/test", WATER],
     ] as const) {
       const res = await send(method, path, body, member);
@@ -209,9 +267,68 @@ describe("adding and changing a mailbox", () => {
     expect((await list()).mailboxes.map((m) => m.name)).toEqual(["Proton bills"]);
     expect((await send("PUT", `/api/mailboxes/${theirs}`, WATER)).status).toBe(404);
     expect((await send("DELETE", `/api/mailboxes/${theirs}`)).status).toBe(404);
+    server.db.run("UPDATE mailboxes SET removed_at = ? WHERE id = ?", stamp, theirs);
+    expect((await list()).removed).toEqual([]);
+    expect((await send("POST", `/api/mailboxes/${theirs}/restore`, WATER)).status).toBe(404);
     expect((await send("POST", "/api/mailboxes/test", { ...WATER, id: theirs, password: undefined })).status).toBe(404);
     expect((await json<CaptureListResponse>(await get("/api/captures"))).captures).toEqual([]);
     expect((await get("/api/captures/their-bills/1700000000/1")).status).toBe(404);
+  });
+});
+
+describe("mail on disk that no mailbox owns (a mailbox deleted before removed ones were kept)", () => {
+  /** As an older version left it: the mailbox deleted outright, its mail still on disk. */
+  async function deletedOutright(): Promise<void> {
+    await saveEmail(server.store, rawEmail({ subject: "Water bill" }), { uid: 1, mailbox: "Proton bill label" });
+    await saveEmail(server.store, rawEmail({ subject: "Water bill 2" }), { uid: 2, mailbox: "Proton bill label" });
+    mkdirSync(join(server.store.root, "empty-folder"), { recursive: true });
+    server.db.run("DELETE FROM app_state WHERE key = 'lost_mail_folders_checked'");
+  }
+
+  it("is listed once as a removed mailbox, named from its emails, and restores with its mail", async () => {
+    await deletedOutright();
+    expect(server.service.mailboxes.findLostFolders()).toBe("found");
+    const { removed } = await list();
+    expect(removed).toEqual([
+      {
+        id: expect.any(Number),
+        name: "Proton bill label",
+        slug: "proton-bill-label",
+        provider: "proton-bridge",
+        folder: "Folders/Bills",
+        imap: null,
+        emails: 2,
+        removedAt: "2026-10-29T12:00:00.000Z",
+      },
+    ]);
+    expect(server.service.mailboxes.findLostFolders()).toBe("done before");
+    expect((await list()).removed).toHaveLength(1);
+
+    const restored = await send("POST", `/api/mailboxes/${removed[0]!.id}/restore`, { ...WATER, name: "Proton bill label", folder: "Labels/Bill" });
+    expect(await json<MailboxInfo>(restored)).toMatchObject({ slug: "proton-bill-label", folder: "Labels/Bill", enabled: true });
+    const { captures } = await json<CaptureListResponse>(await get("/api/captures"));
+    expect(captures.map((c) => c.subject).sort()).toEqual(["Water bill", "Water bill 2"]);
+  });
+
+  it("gets a name of its own when its old one is in use", async () => {
+    await deletedOutright();
+    await send("POST", "/api/mailboxes", { ...WATER, name: "Proton Bill Label" });
+    server.service.mailboxes.findLostFolders();
+    expect((await list()).removed.map((m) => [m.name, m.slug])).toEqual([["Proton bill label (found)", "proton-bill-label"]]);
+  });
+
+  it("stays hidden with more than one household, as it is not known whose it is", async () => {
+    await deletedOutright();
+    server.db.run("INSERT INTO households (name, created_at) VALUES ('The Joneses', '2026-10-29')");
+    expect(server.service.mailboxes.findLostFolders()).toBe("found");
+    expect((await list()).removed).toEqual([]);
+    expect(server.db.get("SELECT 1 FROM mailboxes WHERE slug = 'proton-bill-label'")).toBeUndefined();
+  });
+
+  it("waits for first-time setup on a new install", () => {
+    server.close();
+    server = makeServer();
+    expect(server.service.mailboxes.findLostFolders()).toBe("waiting");
   });
 });
 

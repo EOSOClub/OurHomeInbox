@@ -1,13 +1,15 @@
 // The frame around every signed-in page: the app name, the household, who is
-// signed in, a sign-out button, and the navigation.
+// signed in, a sign-out button, and the navigation (with a mark on Status
+// while a mailbox needs someone).
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Inbox, LogOut, Mail, ReceiptText, Settings } from "lucide-react";
+import { Activity, Inbox, LogOut, Mail, ReceiptText, Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import type { SessionUser } from "../../../src/shared/api";
 import { api } from "../api";
-import { showSignedOut } from "../queries";
+import { showSignedOut, useMailboxes } from "../queries";
+import { anyMailboxProblem } from "../status";
 import { Button, Notice } from "./ui";
 
 function NavItem({ to, active, icon, children }: { to: string; active: boolean; icon: ReactNode; children: ReactNode }) {
@@ -16,11 +18,12 @@ function NavItem({ to, active, icon, children }: { to: string; active: boolean; 
       to={to}
       aria-current={active ? "page" : undefined}
       className={
-        "-mb-px inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium " +
+        "-mb-px inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium " +
         (active ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink")
       }
     >
-      {icon}
+      {/* Text only on a phone, so all the tabs fit across. */}
+      <span className="hidden sm:inline-flex">{icon}</span>
       {children}
     </Link>
   );
@@ -40,6 +43,10 @@ export function AppShell({ user, children }: { user: SessionUser; children: Reac
 
   const onMail = pathname === "/" || pathname.startsWith("/mail/");
   const onBillers = pathname === "/billers" || pathname.startsWith("/billers/");
+  const onSettings = pathname === "/settings" || pathname.startsWith("/settings/");
+  // A mark on Status while a mailbox needs someone.
+  const mailboxes = useMailboxes();
+  const needsYou = mailboxes.data ? anyMailboxProblem(mailboxes.data.mailboxes) : false;
 
   return (
     <div className="min-h-dvh">
@@ -64,14 +71,25 @@ export function AppShell({ user, children }: { user: SessionUser; children: Reac
               </Button>
             </div>
           </div>
-          <nav aria-label="Main" className="flex gap-1">
+          <nav aria-label="Main" className="flex gap-1 overflow-x-auto">
             <NavItem to="/" active={onMail} icon={<Mail aria-hidden className="size-4" />}>
-              Captured mail
+              {/* Shorter on a phone, so all four fit across. */}
+              <span className="sm:hidden">Mail</span>
+              <span className="hidden sm:inline">Captured mail</span>
             </NavItem>
             <NavItem to="/billers" active={onBillers} icon={<ReceiptText aria-hidden className="size-4" />}>
               Billers
             </NavItem>
-            <NavItem to="/settings" active={pathname === "/settings"} icon={<Settings aria-hidden className="size-4" />}>
+            <NavItem to="/status" active={pathname === "/status"} icon={<Activity aria-hidden className="size-4" />}>
+              Status
+              {needsYou ? (
+                <>
+                  <span aria-hidden className="size-2 rounded-full bg-warn" />
+                  <span className="sr-only">(needs you)</span>
+                </>
+              ) : null}
+            </NavItem>
+            <NavItem to="/settings" active={onSettings} icon={<Settings aria-hidden className="size-4" />}>
               Settings
             </NavItem>
           </nav>

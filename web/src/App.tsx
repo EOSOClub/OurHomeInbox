@@ -10,10 +10,11 @@ import { EditBillerPage, NewBillerPage } from "./pages/BillerEditPage";
 import { BillersPage } from "./pages/BillersPage";
 import { CaptureDetailPage } from "./pages/CaptureDetailPage";
 import { CaptureListPage } from "./pages/CaptureListPage";
-import { EditMailboxPage, NewMailboxPage } from "./pages/MailboxEditPage";
+import { EditMailboxPage, NewMailboxPage, RestoreMailboxPage } from "./pages/MailboxEditPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
+import { StatusPage } from "./pages/StatusPage";
 import { SignInPage } from "./pages/SignInPage";
 import { useSession } from "./queries";
 
@@ -47,9 +48,11 @@ export function App() {
         <Route path="/billers" element={<BillersPage />} />
         <Route path="/billers/new" element={<NewBillerPage />} />
         <Route path="/billers/:id" element={<EditBillerPage />} />
+        <Route path="/status" element={<StatusPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/settings/mailboxes/new" element={<NewMailboxPage />} />
         <Route path="/settings/mailboxes/:id" element={<EditMailboxPage />} />
+        <Route path="/settings/mailboxes/removed/:id" element={<RestoreMailboxPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AppShell>
