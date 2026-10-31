@@ -8,10 +8,18 @@
 # "no" deploys straight away.
 #
 # Settings live in the repo-root config.yml and secrets in the repo-root .env
-# (both shared with local dev). Only the walkthrough writes them. Compose
-# passes .env to the container and mounts config.yml into it; this script
-# reads config.yml's `docker:` section (with a pinned yq container, so nothing
-# needs installing) into .compose.env, which compose uses for the network.
+# (both shared with local dev). Compose passes .env to the container and
+# mounts config.yml into it, writable, because the web page's Settings save
+# the reading schedule and log level there. This script reads config.yml's
+# `docker:` section (with a pinned yq container, so nothing needs installing)
+# into .compose.env, which compose uses for the network.
+#
+# Mailboxes are kept in OurHomeInbox's database once it has started: the
+# first start copies the mailbox written here into it, and after that they
+# are changed on the web page (Settings), so the walkthrough only asks about
+# a mailbox before the first start. The key that protects saved mailbox
+# passwords goes in .env (OURHOMEINBOX_SECRET_KEY); this script makes it, or
+# moves in the one OurHomeInbox made in data/secret.key.
 #
 # OurHomeInbox then runs until stopped: the web page and API, and every
 # mailbox read on the capture.every_minutes schedule into the repo-root data/
@@ -185,12 +193,14 @@ ask_yn() {  # $1 question  $2 default y|n; returns 0 for yes
 # ---------------------------------------------------------------------------
 # Settings walkthrough
 # ---------------------------------------------------------------------------
-# Asks about the first mailbox in config.yml (its IMAP connection and folder)
-# and the Docker network. Answers are held until the end, so quitting part way
-# (Ctrl+C) changes nothing, and only what changed is written back.
+# Asks about the first mailbox in config.yml (its IMAP connection and folder),
+# only before OurHomeInbox's first start, and the Docker network. Answers are
+# held until the end, so quitting part way (Ctrl+C) changes nothing, and only
+# what changed is written back.
 setup_wizard() {
   local out line count=0 host="" port="" security="" user="" folder="" pw_env="" net="" dport="" dbind="" has_pw=0
-  local new_host new_port new_security new_user new_pw new_folder new_net new_dport new_dbind expr="" sep="" tmp args=()
+  local new_host="" new_port="" new_security="" new_user="" new_pw="" new_folder="" new_net new_dport new_dbind expr="" sep="" tmp args=()
+  local ask_mailbox=1
 
   out=$(docker run --rm -i "$YQ_IMAGE" '"count=" + (.mailboxes // [] | length | tostring),
       "host=" + ((.mailboxes[0].imap.host // "") | tostring),
@@ -217,56 +227,74 @@ setup_wizard() {
       dbind=*)    dbind=${line#*=} ;;
     esac
   done <<< "$out"
-  [ "$count" -gt 0 ] 2>/dev/null \
-    || fail "config.yml has no mailboxes. Copy the mailbox from config.example.yml into it."
   [ -n "$pw_env" ] || pw_env=PROTON_BRIDGE_PASSWORD
   [ -n "$(env_get "$pw_env" "$SECRETS" || true)" ] && has_pw=1
 
-  step "Proton Mail mailbox: IMAP connection"
-  info "OurHomeInbox reads mail over IMAP (it never sends, so there is no SMTP)."
-  info "Proton Mail is read through Proton Mail Bridge. Its \"info\" command prints"
-  info "the IMAP username and password asked for here. The password is made by"
-  info "the Bridge: it is not your Proton password. No Bridge yet? OurHomeServices"
-  info "has one ready to run: $BRIDGE_DOCS"
-  [ "$count" -gt 1 ] && info "This sets up the first mailbox; edit config.yml for the other $((count - 1))."
-  printf '\n'
+  if [ -f ../data/inbox.db ]; then
+    # Started before: its mailboxes are in the database now.
+    ask_mailbox=0
+    step "Mailboxes"
+    info "Mailboxes are set up on OurHomeInbox's web page now: Settings, Mailboxes."
+    info "There you can add one, change one, test it and save its password."
+  elif ! [ "$count" -gt 0 ] 2>/dev/null; then
+    ask_mailbox=0
+    step "Mailboxes"
+    info "No mailbox in config.yml. Add yours on the web page after signing in:"
+    info "Settings, Mailboxes, Add a mailbox."
+  fi
 
-  info "IMAP server: a Bridge container's name on the Docker network, or"
-  info "host.docker.internal for the Bridge app on this computer (port 1143)."
-  info "Not 127.0.0.1: inside Docker that is the OurHomeInbox container itself."
-  ask "IMAP server" "${host:-protonmail-bridge}"; new_host=$REPLY
+  if [ "$ask_mailbox" = 1 ]; then
+    step "Proton Mail mailbox: IMAP connection"
+    info "OurHomeInbox reads mail over IMAP (it never sends, so there is no SMTP)."
+    info "Proton Mail is read through Proton Mail Bridge. Its \"info\" command prints"
+    info "the IMAP username and password asked for here. The password is made by"
+    info "the Bridge: it is not your Proton password. No Bridge yet? OurHomeServices"
+    info "has one ready to run: $BRIDGE_DOCS"
+    [ "$count" -gt 1 ] && info "This sets up the first mailbox; the other $((count - 1)) in config.yml are copied in as written."
+    printf '\n'
 
-  while true; do
-    ask "IMAP port" "${port:-143}"; new_port=$REPLY
-    [[ $new_port =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1 ] && [ "$new_port" -le 65535 ] && break
-    warn "A port is a number from 1 to 65535 (usually 143, or 993 for tls)."
-  done
+    info "IMAP server: a Bridge container's name on the Docker network, or"
+    info "host.docker.internal for the Bridge app on this computer (port 1143)."
+    info "Not 127.0.0.1: inside Docker that is the OurHomeInbox container itself."
+    ask "IMAP server" "${host:-protonmail-bridge}"; new_host=$REPLY
 
-  info "Security: none (no encryption; only inside one machine or Docker network),"
-  info "starttls (connects, then switches to encryption), or tls (encrypted from"
-  info "the start, \"SSL/TLS\" in mail apps). Proton Mail Bridge in Docker: none,"
-  info "because its certificate is only valid for 127.0.0.1."
-  while true; do
-    ask "IMAP security (none, starttls or tls)" "${security:-none}"; new_security=$REPLY
-    case "$new_security" in none|starttls|tls) break ;; esac
-    warn "Type none, starttls or tls."
-  done
+    while true; do
+      ask "IMAP port" "${port:-143}"; new_port=$REPLY
+      [[ $new_port =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1 ] && [ "$new_port" -le 65535 ] && break
+      warn "A port is a number from 1 to 65535 (usually 143, or 993 for tls)."
+    done
 
-  [ "$user" = "$PLACEHOLDER_USER" ] && user=""
-  while true; do
-    ask "IMAP username (for the Bridge, your Proton address)" "$user"; new_user=$REPLY
-    [ -n "$new_user" ] && break
-    warn "The username is needed."
-  done
+    info "Security: none (no encryption; only inside one machine or Docker network),"
+    info "starttls (connects, then switches to encryption), or tls (encrypted from"
+    info "the start, \"SSL/TLS\" in mail apps). Proton Mail Bridge in Docker: none,"
+    info "because its certificate is only valid for 127.0.0.1."
+    while true; do
+      ask "IMAP security (none, starttls or tls)" "${security:-none}"; new_security=$REPLY
+      case "$new_security" in none|starttls|tls) break ;; esac
+      warn "Type none, starttls or tls."
+    done
 
-  while true; do
-    ask_secret "IMAP password" "$has_pw"; new_pw=$REPLY
-    [ -n "$new_pw" ] || [ "$has_pw" = 1 ] && break
-    warn "The password is needed. For the Bridge, its \"info\" command shows it."
-  done
+    [ "$user" = "$PLACEHOLDER_USER" ] && user=""
+    while true; do
+      ask "IMAP username (for the Bridge, your Proton address)" "$user"; new_user=$REPLY
+      [ -n "$new_user" ] && break
+      warn "The username is needed."
+    done
 
-  info "Proton folders show up as \"Folders/<name>\", labels as \"Labels/<name>\"."
-  ask "IMAP folder your bills are filtered into" "${folder:-INBOX}"; new_folder=$REPLY
+    while true; do
+      ask_secret "IMAP password" "$has_pw"; new_pw=$REPLY
+      [ -n "$new_pw" ] || [ "$has_pw" = 1 ] && break
+      warn "The password is needed. For the Bridge, its \"info\" command shows it."
+    done
+
+    info "Proton folders show up as \"Folders/<name>\", labels as \"Labels/<name>\"."
+    ask "IMAP folder your bills are filtered into" "${folder:-INBOX}"; new_folder=$REPLY
+    info "OurHomeInbox copies this mailbox in when it first starts; after that,"
+    info "change it (or add more) on its web page: Settings, Mailboxes."
+  else
+    # Not asked: keep what is there, so nothing below rewrites it.
+    new_host=$host; new_port=$port; new_security=$security; new_user=$user; new_folder=$folder
+  fi
 
   step "Docker"
   info "OurHomeInbox joins this Docker network. It must be the network your"
@@ -349,6 +377,44 @@ setup_wizard() {
 }
 
 # ---------------------------------------------------------------------------
+# The key that protects saved mailbox passwords
+# ---------------------------------------------------------------------------
+# It belongs in .env, apart from the database. When OurHomeInbox has run
+# without one, it made data/secret.key itself: that key is moved into .env
+# (checked before the file is removed), so the passwords it protects still
+# open. Otherwise a new random key is made. Never printed.
+KEY_NAME=OURHOMEINBOX_SECRET_KEY
+KEY_FILE=../data/secret.key
+ensure_secret_key() {
+  local in_env in_file
+  in_env=$(env_get "$KEY_NAME" "$SECRETS" || true)
+  in_file=""
+  [ -f "$KEY_FILE" ] && in_file=$(tr -d '\r\n' < "$KEY_FILE")
+  if [ -n "$in_env" ]; then
+    if [ -n "$in_file" ] && [ "$in_file" != "$in_env" ]; then
+      warn "$KEY_FILE holds a different key than $KEY_NAME in .env. OurHomeInbox uses the"
+      warn "one in .env, so passwords saved with the other cannot be opened: enter them"
+      warn "again in Settings, or put that key in .env. The file is left as it is."
+    else
+      ok "The key protecting saved passwords is in .env"
+    fi
+    return
+  fi
+  if [ -n "$in_file" ]; then
+    env_put_file "$SECRETS" "$KEY_NAME" "$in_file" || fail "Could not save the key in .env."
+    [ "$(env_get "$KEY_NAME" "$SECRETS" || true)" = "$in_file" ] || fail "The key in .env does not read back as written; $KEY_FILE was kept."
+    rm -f "$KEY_FILE" || warn "Could not remove $KEY_FILE; it holds the same key as .env."
+    ok "Moved the key protecting saved passwords from data/secret.key into .env"
+    return
+  fi
+  local key
+  key=$(head -c 32 /dev/urandom | base64 | tr -d '\r\n') || fail "Could not make a key."
+  [ ${#key} -eq 44 ] || fail "Could not make a key."
+  env_put_file "$SECRETS" "$KEY_NAME" "$key" || fail "Could not save the key in .env."
+  ok "Made the key that protects saved passwords, in .env"
+}
+
+# ---------------------------------------------------------------------------
 # Parse args
 # ---------------------------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -428,6 +494,7 @@ case "$(uname -s)" in
 esac
 DATA_DIR=$(cd ../data && pwd)
 ok "Captured mail goes in $DATA_DIR"
+ensure_secret_key
 
 # --- Network and Bridge ----------------------------------------------------
 step "Docker network and Proton Bridge"

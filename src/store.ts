@@ -28,10 +28,14 @@ export class CaptureStore {
     return existsSync(join(this.messageDir(mailbox, uidValidity, uid), "capture.json"));
   }
 
-  /** Saves one message and returns its folder. */
-  async save(result: CaptureResult, raw: Buffer): Promise<string> {
+  /**
+   * Saves one message and returns its folder. `slug` is the mailbox's folder
+   * name (it stays the same when the mailbox is renamed); without it, the
+   * capture's mailbox name decides.
+   */
+  async save(result: CaptureResult, raw: Buffer, slug: string = result.capture.mailbox): Promise<string> {
     const { capture } = result;
-    const dir = this.messageDir(capture.mailbox, capture.uidValidity, capture.uid);
+    const dir = this.messageDir(slug, capture.uidValidity, capture.uid);
     if (existsSync(join(dir, "capture.json"))) throw new Error(`Message ${capture.uid} is already captured`);
 
     // Anything here is left over from a run that stopped part way.

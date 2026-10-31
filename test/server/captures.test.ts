@@ -2,8 +2,8 @@ import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { attachmentDisposition } from "../../src/server/captures.js";
-import type { ApiError, CaptureDetailResponse, CaptureListResponse, SettingsResponse } from "../../src/shared/api.js";
-import { BRIDGE_PASSWORD, call, json, makeServer, rawEmail, saveEmail, setUp, testConfig, type TestServer } from "./helpers.js";
+import type { ApiError, CaptureDetailResponse, CaptureListResponse } from "../../src/shared/api.js";
+import { call, json, makeServer, rawEmail, saveEmail, setUp, type TestServer } from "./helpers.js";
 
 let server: TestServer;
 let cookie: string;
@@ -286,50 +286,5 @@ describe("downloads", () => {
     );
     expect(attachmentDisposition("it's (1).pdf")).toContain("filename*=UTF-8''it%27s%20%281%29.pdf");
     expect(attachmentDisposition("...")).toBe(`attachment; filename="download"; filename*=UTF-8''download`);
-  });
-});
-
-describe("GET /api/settings", () => {
-  it("describes the settings in use without any password", async () => {
-    const res = await get("/api/settings");
-    expect(res.status).toBe(200);
-    const text = await res.text();
-    expect(text).not.toContain(BRIDGE_PASSWORD);
-    const body = JSON.parse(text);
-    expect(body).toMatchObject({
-      configPath: "/app/config.yml",
-      logLevel: "info",
-      web: { port: 8080 },
-      capture: { everyMinutes: 15 },
-      mailboxes: [
-        {
-          name: "Proton bills",
-          slug: "proton-bills",
-          provider: "proton-bridge",
-          folder: "Folders/Bills",
-          imap: {
-            host: "127.0.0.1",
-            port: 1143,
-            security: "starttls",
-            username: "sam@proton.me",
-            passwordEnv: "PROTON_BRIDGE_PASSWORD",
-            passwordSet: true,
-          },
-        },
-      ],
-    });
-    expect(Object.keys(body.mailboxes[0].imap).sort()).toEqual(
-      ["host", "passwordEnv", "passwordSet", "port", "security", "username"].sort(),
-    );
-  });
-
-  it("says when a mailbox has no password", async () => {
-    server.close();
-    const config = testConfig();
-    config.mailboxes[0]!.imap.password = "";
-    server = makeServer({ config });
-    cookie = await setUp(server.app);
-    const body = await json<SettingsResponse>(await get("/api/settings"));
-    expect(body.mailboxes[0]?.imap.passwordSet).toBe(false);
   });
 });

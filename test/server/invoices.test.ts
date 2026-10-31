@@ -10,7 +10,7 @@ import { fetchInvoice, guardedLookup, invoiceLink, invoicePass, isPublicAddress,
 import { readPdf } from "../../src/server/pdf.js";
 import type { CaptureDetailResponse, CaptureListResponse } from "../../src/shared/api.js";
 import type { InvoiceRecord } from "../../src/shared/invoice.js";
-import { call, json, makeServer, saveEmail, setUp, testConfig, type TestServer } from "./helpers.js";
+import { call, json, makeServer, saveEmail, setUp, type TestServer } from "./helpers.js";
 
 /** A one-page PDF with each text at its place (x, y from the bottom left), like a real invoice's layout. */
 function pdfWith(texts: Array<[number, number, string]>): Buffer {
@@ -248,7 +248,7 @@ const saved = async (): Promise<FetchResult> => {
 
 describe("the invoice pass", () => {
   const run = (fetch: (link: string) => Promise<FetchResult>) =>
-    invoicePass({ config: testConfig(), store: server.store, db: server.db, fetch, now: () => new Date("2026-10-30T12:00:00Z") });
+    invoicePass({ store: server.store, db: server.db, mailboxes: server.service.mailboxes, fetch, now: () => new Date("2026-10-30T12:00:00Z") });
 
   it("gets the invoice once for a confirmed sender with the switch on, and shows it", async () => {
     await addWm();

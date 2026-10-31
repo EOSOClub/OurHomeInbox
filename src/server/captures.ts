@@ -19,7 +19,6 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Hono, type Context } from "hono";
-import type { Config } from "../config.js";
 import { log } from "../log.js";
 import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse, FieldChoicesResponse } from "../shared/api.js";
 import type { Capture } from "../shared/capture.js";
@@ -30,15 +29,16 @@ import { listBillers } from "./billers.js";
 import type { Database } from "./db.js";
 import { choicesFor, extract, PreparedEmail, summarize } from "./extraction.js";
 import { apiError, householdOf, type AppEnv } from "./http.js";
-import { eachCapture, householdMailboxes, INVOICE_FILE, readCapture, readInvoiceRecord, UID, UID_VALIDITY, type StoredCapture } from "./mail.js";
+import { eachCapture, INVOICE_FILE, readCapture, readInvoiceRecord, UID, UID_VALIDITY, type StoredCapture } from "./mail.js";
+import type { MailboxPlace, Mailboxes } from "./mailboxes.js";
 import { BillerMatcher } from "./matching.js";
 import { billerEmails, householdRules } from "./rules.js";
 import { checkSender } from "./sender.js";
 
 export interface CaptureDeps {
-  config: Config;
   store: CaptureStore;
   db: Database;
+  mailboxes: Mailboxes;
 }
 
 const NOT_FOUND = "That email was not found. It may be in a mailbox that is no longer set up.";
@@ -75,13 +75,16 @@ class SummaryCache {
   }
 }
 
-/** The household's billers and their rules, read once per request. */
+/** The household's mailboxes, billers and their rules, read once per request. */
 class HouseholdReader {
   readonly matcher: BillerMatcher;
+  /** The household's mailboxes by slug: only their mail is shown. */
+  readonly places: Map<string, MailboxPlace>;
   private readonly rules: Map<number, BillerRule[]>;
 
-  constructor(db: Database, householdId: number) {
+  constructor(db: Database, mailboxes: Mailboxes, householdId: number) {
     this.matcher = new BillerMatcher(listBillers(db, householdId));
+    this.places = mailboxes.places(householdId);
     this.rules = householdRules(db, householdId);
   }
 
@@ -123,7 +126,7 @@ function invoiceInfo(record: InvoiceRecord | null): InvoiceInfo | null {
 
 async function listCaptures(deps: CaptureDeps, reader: HouseholdReader, summaries: SummaryCache): Promise<CaptureListItem[]> {
   const items: CaptureListItem[] = [];
-  for await (const stored of eachCapture(deps.config, deps.store)) {
+  for await (const stored of eachCapture(reader.places.values(), deps.store)) {
     try {
       items.push(listItem(stored, reader, summaries));
     } catch (err) {
@@ -145,15 +148,14 @@ interface Located {
   dir: string;
 }
 
-/** The message folder named by the route's params, or an error reply when they name nothing. */
-function locate(c: Context, deps: CaptureDeps): Located | Response {
+/** The message folder named by the route's params, or an error reply when they name nothing. Only the household's own mailboxes count. */
+function locate(c: Context<AppEnv>, deps: CaptureDeps): Located | Response {
   const { mailbox: slug = "", uidValidity = "", uid: uidText = "" } = c.req.param();
-  const mailbox = householdMailboxes(deps.config).get(slug);
-  if (!mailbox) return apiError(c, 404, NOT_FOUND);
+  if (!deps.mailboxes.places(householdOf(c)).has(slug)) return apiError(c, 404, NOT_FOUND);
   if (!UID_VALIDITY.test(uidValidity) || !UID.test(uidText)) return apiError(c, 400, BAD_LINK);
   const uid = Number(uidText);
   if (!Number.isSafeInteger(uid)) return apiError(c, 400, BAD_LINK);
-  return { slug, uidValidity, uid, dir: deps.store.messageDir(mailbox.name, uidValidity, uid) };
+  return { slug, uidValidity, uid, dir: deps.store.messageDir(slug, uidValidity, uid) };
 }
 
 async function locateCapture(c: Context, deps: CaptureDeps): Promise<(Located & { capture: Capture; invoice: InvoiceRecord | null }) | Response> {
@@ -204,7 +206,7 @@ function download(c: Context, content: Buffer, name: string): Response {
 export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
-  const readerFor = (c: Context<AppEnv>) => new HouseholdReader(deps.db, householdOf(c));
+  const readerFor = (c: Context<AppEnv>) => new HouseholdReader(deps.db, deps.mailboxes, householdOf(c));
   const summaries = new SummaryCache();
 
   app.get("/captures", async (c) => {
@@ -254,7 +256,7 @@ export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
     if (!biller) return apiError(c, 409, NO_BILLER);
     const rules = reader.rulesFor(biller.id);
     const id = `${found.slug}/${found.uidValidity}/${found.uid}`;
-    const others = await billerEmails(deps, reader.matcher, biller.id, id);
+    const others = await billerEmails(reader.places.values(), deps.store, reader.matcher, biller.id, id);
     const body: FieldChoicesResponse = {
       field: field as FieldName,
       biller,

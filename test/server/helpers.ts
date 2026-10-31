@@ -6,36 +6,50 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
 import { buildCapture } from "../../src/capture.js";
-import type { Config } from "../../src/config.js";
-import { createApp } from "../../src/server/app.js";
+import { loadConfig } from "../../src/config.js";
 import { openDatabase, type Database } from "../../src/server/db.js";
 import type { AppEnv } from "../../src/server/http.js";
+import type { Timers } from "../../src/server/scheduler.js";
+import { createService, type Service } from "../../src/server/service.js";
 import { CaptureStore } from "../../src/store.js";
 
 export const ORIGIN = "http://localhost";
 export const BRIDGE_PASSWORD = "bridge-secret-do-not-leak";
 export const ADMIN = { householdName: "The Smiths", name: "Sam Smith", email: "sam@example.com", password: "correct horse battery" };
 
-export function testConfig(): Config {
+/** The test install's config.yml: one Proton mailbox, copied into the database at first-time setup. */
+export const TEST_CONFIG_YAML = `# The test install's settings.
+log_level: info
+web:
+  port: 8080
+capture:
+  every_minutes: 15 # how often mail is read
+mailboxes:
+  - name: Proton bills
+    provider: proton-bridge
+    folder: Folders/Bills
+    imap:
+      host: 127.0.0.1
+      port: 1143
+      security: starttls
+      username: sam@proton.me
+      password_env: PROTON_BRIDGE_PASSWORD
+`;
+
+/** Timers that never fire on their own: tests run reads with checkNow and look at what was scheduled. */
+export function manualTimers(): Timers & { pending: Array<{ fn: () => void; ms: number }> } {
+  const pending: Array<{ fn: () => void; ms: number }> = [];
   return {
-    logLevel: "info",
-    web: { port: 8080 },
-    capture: { everyMinutes: 15 },
-    mailboxes: [
-      {
-        name: "Proton bills",
-        provider: "proton-bridge",
-        folder: "Folders/Bills",
-        imap: {
-          host: "127.0.0.1",
-          port: 1143,
-          security: "starttls",
-          username: "sam@proton.me",
-          passwordEnv: "PROTON_BRIDGE_PASSWORD",
-          password: BRIDGE_PASSWORD,
-        },
-      },
-    ],
+    pending,
+    setTimeout: (fn, ms) => {
+      const entry = { fn, ms };
+      pending.push(entry);
+      return entry;
+    },
+    clearTimeout: (handle) => {
+      const at = pending.indexOf(handle as { fn: () => void; ms: number });
+      if (at !== -1) pending.splice(at, 1);
+    },
   };
 }
 
@@ -44,15 +58,26 @@ export interface TestServer {
   db: Database;
   store: CaptureStore;
   dir: string;
+  /** The test install's config.yml. */
+  configPath: string;
+  service: Service;
+  timers: ReturnType<typeof manualTimers>;
   /** Moves the app's clock. */
   clock: { now: Date };
   close(): void;
 }
 
-export function makeServer(options: { webRoot?: boolean; config?: Config } = {}): TestServer {
+export function makeServer(
+  options: { webRoot?: boolean; configYaml?: string; env?: NodeJS.ProcessEnv; readMail?: () => Promise<void> } = {},
+): TestServer {
   const dir = mkdtempSync(join(tmpdir(), "ourhomeinbox-server-"));
-  const db = openDatabase(join(dir, "data", "ourhomeinbox.db"));
+  const dataDir = join(dir, "data");
+  mkdirSync(dataDir, { recursive: true });
+  const db = openDatabase(join(dataDir, "ourhomeinbox.db"));
   const store = new CaptureStore(join(dir, "captures"));
+  const configPath = join(dir, "config.yml");
+  writeFileSync(configPath, options.configYaml ?? TEST_CONFIG_YAML);
+  const env: NodeJS.ProcessEnv = { PROTON_BRIDGE_PASSWORD: BRIDGE_PASSWORD, ...options.env, OURHOMEINBOX_CONFIG: configPath };
   let webRoot: string | null = null;
   if (options.webRoot) {
     webRoot = join(dir, "web");
@@ -61,20 +86,29 @@ export function makeServer(options: { webRoot?: boolean; config?: Config } = {})
     writeFileSync(join(webRoot, "assets", "app-abc123.js"), "console.log('app');");
   }
   const clock = { now: new Date("2026-10-29T12:00:00Z") };
-  const app = createApp({
-    config: options.config ?? testConfig(),
-    configPath: "/app/config.yml",
+  const timers = manualTimers();
+  const service = createService({
+    config: loadConfig(env),
+    configPath,
+    load: () => loadConfig(env),
+    dataDir,
     db,
     store,
     webRoot,
     version: "0.1.0-test",
+    env,
     now: () => clock.now,
+    readMail: options.readMail ?? (async () => {}),
+    timers,
   });
   return {
-    app,
+    app: service.app,
     db,
     store,
     dir,
+    configPath,
+    service,
+    timers,
     clock,
     close() {
       db.close();

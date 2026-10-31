@@ -19,7 +19,6 @@ import { request } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 import { rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Config } from "../config.js";
 import { log } from "../log.js";
 import type { CapturedLink } from "../shared/capture.js";
 import type { InvoiceText } from "../shared/extraction.js";
@@ -28,6 +27,7 @@ import type { CaptureStore } from "../store.js";
 import { listBillers } from "./billers.js";
 import type { Database } from "./db.js";
 import { eachCapture, INVOICE_FILE, INVOICE_RECORD } from "./mail.js";
+import type { Mailboxes } from "./mailboxes.js";
 import { BillerMatcher } from "./matching.js";
 import { readPdf } from "./pdf.js";
 import { checkSender } from "./sender.js";
@@ -302,9 +302,9 @@ function settled(record: InvoiceRecord | null): boolean {
 }
 
 export interface InvoicePassDeps {
-  config: Config;
   store: CaptureStore;
   db: Database;
+  mailboxes: Mailboxes;
   now?: () => Date;
   /** For tests. */
   fetch?: (link: string) => Promise<FetchResult>;
@@ -312,59 +312,56 @@ export interface InvoicePassDeps {
 
 /**
  * Gets the invoice for every captured email that can have one and has not
- * been settled yet: a confirmed sender, a biller with the switch on, and an
- * invoice link. Each email's link is opened at most MAX_ATTEMPTS times, ever.
+ * been settled yet: a confirmed sender, a biller of its own household with the
+ * switch on, and an invoice link. Each email's link is opened at most
+ * MAX_ATTEMPTS times, ever.
  */
 export async function invoicePass(deps: InvoicePassDeps): Promise<{ tried: number; saved: number }> {
   const now = deps.now ?? (() => new Date());
   const fetch = deps.fetch ?? ((link: string) => fetchInvoice(link));
-  // v1 has one household; every household's billers are asked, the first that matches decides.
-  const households = deps.db.all<{ id: number }>("SELECT id FROM households ORDER BY id").map((h) => {
-    const billers = listBillers(deps.db, h.id);
-    return { matcher: new BillerMatcher(billers), billers: new Map(billers.map((b) => [b.id, b])) };
-  });
   let tried = 0;
   let saved = 0;
-  for await (const stored of eachCapture(deps.config, deps.store)) {
-    if (tried >= MAX_PER_PASS) {
-      log.info(`Invoices: stopping at ${MAX_PER_PASS} links for now; the rest follow on the next pass`);
-      break;
-    }
-    const previous = stored.invoice;
-    if (settled(previous)) continue;
-    const { capture } = stored;
-    const link = invoiceLink(capture.links);
-    if (!link || !checkSender(capture).verified) continue;
-    const biller = households
-      .map((h) => {
-        const match = h.matcher.match(capture.from);
-        return match ? h.billers.get(match.id) : undefined;
-      })
-      .find((b) => b !== undefined);
-    if (!biller?.fetchInvoices) continue;
+  households: for (const householdId of deps.mailboxes.households()) {
+    const billers = listBillers(deps.db, householdId);
+    const matcher = new BillerMatcher(billers);
+    const byId = new Map(billers.map((b) => [b.id, b]));
+    for await (const stored of eachCapture(deps.mailboxes.places(householdId).values(), deps.store)) {
+      if (tried >= MAX_PER_PASS) {
+        log.info(`Invoices: stopping at ${MAX_PER_PASS} links for now; the rest follow on the next pass`);
+        break households;
+      }
+      const previous = stored.invoice;
+      if (settled(previous)) continue;
+      const { capture } = stored;
+      const link = invoiceLink(capture.links);
+      if (!link || !checkSender(capture).verified) continue;
+      const match = matcher.match(capture.from);
+      const biller = match ? byId.get(match.id) : undefined;
+      if (!biller?.fetchInvoices) continue;
 
-    tried += 1;
-    const linkText = (link.text ?? "").replace(/\s+/g, " ").trim().slice(0, 100);
-    const got = await fetch(link.url);
-    const attempts = (previous?.attempts ?? 0) + 1;
-    const record: InvoiceRecord = {
-      version: 1,
-      outcome: got.outcome,
-      reason: invoiceReason(got.outcome, linkText, got.host, got.detail, got.pages, got.retry ? attempts : MAX_ATTEMPTS),
-      linkText,
-      url: link.url,
-      host: got.host,
-      triedAt: now().toISOString(),
-      attempts: got.retry ? attempts : Math.max(attempts, MAX_ATTEMPTS),
-      file: got.pdf ? INVOICE_FILE : null,
-      size: got.pdf ? got.pdf.length : null,
-      sha256: got.pdf ? createHash("sha256").update(got.pdf).digest("hex") : null,
-      pages: got.pages,
-      text: got.text,
-    };
-    await writeInvoice(stored.dir, record, got.pdf);
-    if (got.outcome === "saved") saved += 1;
-    log.info(`Invoice for ${stored.id} (${biller.name}): ${got.outcome}${got.host ? ` at ${got.host}` : ""}${got.detail ? `, ${got.detail}` : ""}`);
+      tried += 1;
+      const linkText = (link.text ?? "").replace(/\s+/g, " ").trim().slice(0, 100);
+      const got = await fetch(link.url);
+      const attempts = (previous?.attempts ?? 0) + 1;
+      const record: InvoiceRecord = {
+        version: 1,
+        outcome: got.outcome,
+        reason: invoiceReason(got.outcome, linkText, got.host, got.detail, got.pages, got.retry ? attempts : MAX_ATTEMPTS),
+        linkText,
+        url: link.url,
+        host: got.host,
+        triedAt: now().toISOString(),
+        attempts: got.retry ? attempts : Math.max(attempts, MAX_ATTEMPTS),
+        file: got.pdf ? INVOICE_FILE : null,
+        size: got.pdf ? got.pdf.length : null,
+        sha256: got.pdf ? createHash("sha256").update(got.pdf).digest("hex") : null,
+        pages: got.pages,
+        text: got.text,
+      };
+      await writeInvoice(stored.dir, record, got.pdf);
+      if (got.outcome === "saved") saved += 1;
+      log.info(`Invoice for ${stored.id} (${biller.name}): ${got.outcome}${got.host ? ` at ${got.host}` : ""}${got.detail ? `, ${got.detail}` : ""}`);
+    }
   }
   return { tried, saved };
 }

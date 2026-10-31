@@ -16,7 +16,16 @@
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/attachments/:index   one attachment (1-based), as a download
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/choices/:field       FieldChoicesResponse; 409 when no biller matches
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/invoice              the invoice its link gave (PDF), as a download
+//   PUT    /api/account/password             PasswordChangeRequest -> 204 (signs out your other sessions)
 //   GET    /api/settings                     SettingsResponse
+//   PUT    /api/settings                     SettingsInput -> SettingsResponse (admin; written to config.yml)
+//   POST   /api/settings/reload              -> SettingsResponse (admin; reads config.yml again)
+//   GET    /api/mailboxes                    MailboxListResponse
+//   POST   /api/mailboxes                    MailboxInput -> MailboxInfo (201; admin)
+//   PUT    /api/mailboxes/:id                MailboxInput -> MailboxInfo (admin)
+//   DELETE /api/mailboxes/:id                -> 204 (admin; its captured mail stays on disk)
+//   POST   /api/mailboxes/test               MailboxTestRequest -> MailboxTestResponse (admin)
+//   POST   /api/mailboxes/check              -> CheckingState (reads every mailbox now)
 //   GET    /api/billers                      BillerListResponse
 //   POST   /api/billers                      BillerInput -> Biller (201)
 //   GET    /api/billers/:id                  Biller
@@ -35,6 +44,7 @@ import type { Capture, CapturedAddress } from "./capture.js";
 import type { BillerRule, Extraction, ExtractionSummary, FieldChoice, FieldName } from "./extraction.js";
 import type { InvoiceInfo } from "./invoice.js";
 import type { SenderCheck } from "./sender.js";
+import type { LogLevel, Provider, Security } from "./settings.js";
 
 export interface ApiError {
   error: string;
@@ -142,30 +152,114 @@ export interface FieldChoicesResponse {
   choices: FieldChoice[];
 }
 
-export interface SettingsMailbox {
+/** One of the household's mailboxes. Never contains its password. */
+export interface MailboxInfo {
+  id: number;
   name: string;
+  /** Its folder under data/mail, and its part of each email's address. Kept when renamed. */
   slug: string;
-  provider: string;
+  provider: Provider;
+  /** The folder in the mailbox that is read. */
   folder: string;
   imap: {
     host: string;
     port: number;
-    security: string;
+    security: Security;
     username: string;
-    /** The .env line holding the password. The password itself is never sent. */
-    passwordEnv: string;
     passwordSet: boolean;
+    /** Why a saved password cannot be used (such as a changed secret key), or null. */
+    passwordProblem: string | null;
   };
+  /** False while paused: it is not read. */
+  enabled: boolean;
+  /** How the last read went, or null before the first. */
+  lastCheck: { at: string; ok: boolean; message: string; captured: number } | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
-/** The settings in use, read-only for now. Never contains a secret. */
+/** When mail is read. */
+export interface CheckingState {
+  everyMinutes: number;
+  /** True while mailboxes are being read. */
+  running: boolean;
+  lastStartedAt: string | null;
+  lastFinishedAt: string | null;
+  /** When the next read starts, or null while one is running. */
+  nextAt: string | null;
+}
+
+export interface MailboxListResponse {
+  mailboxes: MailboxInfo[];
+  checking: CheckingState;
+  /** True when the signed-in person may add and change mailboxes. */
+  canEdit: boolean;
+}
+
+/** Adding or changing a mailbox. `password` left out (or empty) keeps the saved one. */
+export interface MailboxInput {
+  name: string;
+  provider: Provider;
+  host: string;
+  port: number;
+  security: Security;
+  username: string;
+  password?: string;
+  folder: string;
+  enabled?: boolean;
+}
+
+/** Trying a mailbox's settings before saving them. With `id` and no password, that mailbox's saved password is used. */
+export interface MailboxTestRequest {
+  id?: number;
+  provider: Provider;
+  host: string;
+  port: number;
+  security: Security;
+  username: string;
+  password?: string;
+  folder: string;
+}
+
+export interface MailboxTestResponse {
+  ok: boolean;
+  /** What happened, in plain words. */
+  message: string;
+  /** Every folder in the mailbox, when it could sign in. */
+  folders: string[];
+  /** Messages in the chosen folder, when it exists. */
+  messages: number | null;
+}
+
+/** The install's settings (config.yml). Never contains a secret. */
 export interface SettingsResponse {
-  /** Where config.yml was read from. */
+  /** Where config.yml is. */
   configPath: string;
-  logLevel: string;
+  logLevel: LogLevel;
+  captureEveryMinutes: number;
   web: { port: number };
-  capture: { everyMinutes: number };
-  mailboxes: SettingsMailbox[];
+  /** config.yml's docker section, read by docker/deploy.sh. */
+  docker: { network: string | null; port: number | null; bind: string | null } | null;
+  /** True when the signed-in person may change these (an admin). */
+  canEdit: boolean;
+  /** Settings in config.yml that differ from what is running and only take effect after docker/deploy.sh, in plain words. */
+  needsRestart: string[];
+  /** Mailboxes still listed in config.yml after they were copied into the database (they are not read). */
+  ignoredMailboxes: number;
+  /** Where the key that protects saved passwords comes from. */
+  secretKey: "env" | "file";
+}
+
+/** Changing the install's settings; both are written to config.yml. */
+export interface SettingsInput {
+  logLevel: LogLevel;
+  captureEveryMinutes: number;
+}
+
+/** Changing your own sign-in password. Signs out your other sessions. */
+export interface PasswordChangeRequest {
+  currentPassword: string;
+  newPassword: string;
 }
 
 export interface Biller {

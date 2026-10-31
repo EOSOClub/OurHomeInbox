@@ -7,9 +7,22 @@
 import { existsSync } from "node:fs";
 import { ImapFlow } from "imapflow";
 import { buildCapture } from "./capture.js";
-import type { MailboxConfig, Security } from "./config.js";
+import type { Provider, Security } from "./config.js";
 import { log } from "./log.js";
 import type { CaptureStore } from "./store.js";
+
+/** What reading a mailbox needs. */
+export interface MailboxToRead {
+  name: string;
+  /** Its folder under data/mail. Stays the same when the mailbox is renamed, so its mail never moves. */
+  slug: string;
+  provider: Provider;
+  /** The folder in the mailbox that is read, such as "Folders/Bills". */
+  folder: string;
+  imap: { host: string; port: number; security: Security; username: string; password: string };
+}
+
+type Connection = Pick<MailboxToRead, "provider" | "imap">;
 
 /** Larger messages are skipped with a warning rather than read into memory. */
 export const MAX_MESSAGE_BYTES = 50 * 1024 * 1024;
@@ -46,8 +59,9 @@ export const SECURITY_OPTIONS: Record<Security, { secure: boolean; doSTARTTLS: b
   tls: { secure: true, doSTARTTLS: undefined },
 };
 
-async function connect(mailbox: MailboxConfig): Promise<ImapFlow> {
+async function connect(mailbox: Connection): Promise<ImapFlow> {
   const { imap } = mailbox;
+  if (imap.password === "") throw new MailboxError("No password is saved for this mailbox. Add it in Settings.");
   const client = new ImapFlow({
     host: imap.host,
     port: imap.port,
@@ -69,7 +83,7 @@ async function connect(mailbox: MailboxConfig): Promise<ImapFlow> {
  * yet, one at a time, logging each. A message that fails is logged and left
  * for the next run; the others still get captured.
  */
-export async function captureMailbox(mailbox: MailboxConfig, store: CaptureStore): Promise<CaptureSummary> {
+export async function captureMailbox(mailbox: MailboxToRead, store: CaptureStore): Promise<CaptureSummary> {
   const client = await connect(mailbox);
   try {
     let uidValidity: string;
@@ -86,7 +100,7 @@ export async function captureMailbox(mailbox: MailboxConfig, store: CaptureStore
     const summary: CaptureSummary = { inFolder: 0, alreadyCaptured: 0, captured: 0, failed: 0, tooLarge: 0 };
     const listed = client.mailbox && client.mailbox.exists > 0 ? await client.fetchAll("1:*", { uid: true, size: true }) : [];
     summary.inFolder = listed.length;
-    const pending = listed.filter((message) => !store.has(mailbox.name, uidValidity, message.uid));
+    const pending = listed.filter((message) => !store.has(mailbox.slug, uidValidity, message.uid));
     summary.alreadyCaptured = listed.length - pending.length;
     log.info(`"${mailbox.name}": ${summary.inFolder} message(s) in the folder, ${pending.length} not captured yet`);
 
@@ -106,7 +120,7 @@ export async function captureMailbox(mailbox: MailboxConfig, store: CaptureStore
           uid: message.uid,
           capturedAt: new Date(),
         });
-        await store.save(result, fetched.source);
+        await store.save(result, fetched.source, mailbox.slug);
         const { capture } = result;
         log.info(
           `"${mailbox.name}": captured message ${message.uid}: ${quote(capture.subject)}, ` +
@@ -119,6 +133,32 @@ export async function captureMailbox(mailbox: MailboxConfig, store: CaptureStore
       }
     }
     return summary;
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+}
+
+export interface MailboxTest {
+  /** Every folder in the mailbox, for choosing one. */
+  folders: string[];
+  /** Messages in the chosen folder, or null when there is no such folder. */
+  messages: number | null;
+  /** Why the chosen folder could not be found, with the closest names; null when it was. */
+  folderProblem: string | null;
+}
+
+/**
+ * Signs in, lists the folders and opens the chosen one read-only, to show the
+ * settings work before they are saved. Changes nothing. Throws a MailboxError
+ * in plain words when it cannot sign in.
+ */
+export async function testMailbox(mailbox: Connection & { folder: string }): Promise<MailboxTest> {
+  const client = await connect(mailbox);
+  try {
+    const folders = (await client.list()).map((folder) => folder.path).sort();
+    if (!folders.includes(mailbox.folder)) return { folders, messages: null, folderProblem: missingFolderMessage(mailbox.folder, folders) };
+    const opened = await client.mailboxOpen(mailbox.folder, { readOnly: true });
+    return { folders, messages: opened.exists, folderProblem: null };
   } finally {
     await client.logout().catch(() => undefined);
   }
@@ -166,7 +206,7 @@ const CERTIFICATE_PROBLEMS = new Map([
 /** Addresses that mean "this container" when OurHomeInbox runs in Docker. */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
-export function explainConnectError(mailbox: MailboxConfig, err: unknown, inDocker = existsSync("/.dockerenv")): MailboxError {
+export function explainConnectError(mailbox: Connection, err: unknown, inDocker = existsSync("/.dockerenv")): MailboxError {
   const { imap } = mailbox;
   const where = `${imap.host}:${imap.port}`;
   if (inDocker && LOOPBACK_HOSTS.has(imap.host)) {

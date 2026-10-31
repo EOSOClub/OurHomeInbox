@@ -82,6 +82,39 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE billers ADD COLUMN fetch_invoices integer NOT NULL DEFAULT 1;
   `,
+  // Mailboxes, per household (see mailboxes.ts). The slug is the mailbox's
+  // folder under data/mail: unique across the install, and kept when the
+  // mailbox is renamed so its mail never moves. The password is encrypted
+  // (secrets.ts); '' means none is saved. The last_* columns say how the last
+  // read went. app_state remembers one-time jobs, such as copying the
+  // mailboxes from config.yml.
+  `
+  CREATE TABLE mailboxes (
+    id integer PRIMARY KEY,
+    household_id integer NOT NULL REFERENCES households(id),
+    name text NOT NULL,
+    slug text NOT NULL UNIQUE,
+    provider text NOT NULL,
+    host text NOT NULL,
+    port integer NOT NULL,
+    security text NOT NULL,
+    username text NOT NULL,
+    password_secret text NOT NULL DEFAULT '',
+    folder text NOT NULL,
+    enabled integer NOT NULL DEFAULT 1,
+    last_checked_at text,
+    last_outcome text,
+    last_message text,
+    last_captured integer,
+    created_at text NOT NULL,
+    updated_at text NOT NULL
+  );
+  CREATE UNIQUE INDEX mailboxes_household_name ON mailboxes(household_id, name COLLATE NOCASE);
+  CREATE TABLE app_state (
+    key text PRIMARY KEY,
+    value text NOT NULL
+  );
+  `,
 ];
 
 /** The schema version this code expects. */

@@ -10,7 +10,6 @@
 
 import { Hono, type Context } from "hono";
 import { z } from "zod";
-import type { Config } from "../config.js";
 import type { BillerRuleItem, BillerRulesResponse } from "../shared/api.js";
 import { FIELDS, MAX_RULE_LABEL, type BillerRule, type FieldName } from "../shared/extraction.js";
 import type { CaptureStore } from "../store.js";
@@ -19,12 +18,13 @@ import type { Database } from "./db.js";
 import { finish, PreparedEmail } from "./extraction.js";
 import { apiError, householdOf, jsonBody, MESSAGES, type AppEnv } from "./http.js";
 import { eachCapture } from "./mail.js";
+import type { MailboxPlace, Mailboxes } from "./mailboxes.js";
 import { BillerMatcher } from "./matching.js";
 
 export interface RuleDeps {
-  config: Config;
   store: CaptureStore;
   db: Database;
+  mailboxes: Mailboxes;
   now: () => Date;
 }
 
@@ -70,17 +70,18 @@ export function householdRules(db: Database, householdId: number): Map<number, B
 }
 
 /**
- * The emails from one of the household's billers, read and ready to try
- * rules on. `except` leaves out one email by its id.
+ * The emails from one of the household's billers, in the household's
+ * mailboxes, read and ready to try rules on. `except` leaves out one email by its id.
  */
 export async function billerEmails(
-  deps: { config: Config; store: CaptureStore },
+  mailboxes: Iterable<MailboxPlace>,
+  store: CaptureStore,
   matcher: BillerMatcher,
   billerId: number,
   except: string | null = null,
 ): Promise<PreparedEmail[]> {
   const emails: PreparedEmail[] = [];
-  for await (const stored of eachCapture(deps.config, deps.store)) {
+  for await (const stored of eachCapture(mailboxes, store)) {
     if (stored.id !== except && matcher.match(stored.capture.from)?.id === billerId) {
       emails.push(new PreparedEmail(stored.capture, stored.invoice?.text ?? null));
     }
@@ -107,7 +108,8 @@ export function ruleRoutes(deps: RuleDeps): Hono<AppEnv> {
     const created = new Map(
       db.all<RuleRow>("SELECT field, created_at FROM biller_rules WHERE biller_id = ?", id).map((r) => [r.field, r.created_at]),
     );
-    const emails = await billerEmails(deps, new BillerMatcher(listBillers(db, householdId)), id);
+    const places = deps.mailboxes.places(householdId).values();
+    const emails = await billerEmails(places, deps.store, new BillerMatcher(listBillers(db, householdId)), id);
     const usedOn = new Map<FieldName, number>();
     for (const email of emails) {
       for (const field of finish(email, rules).fields) {

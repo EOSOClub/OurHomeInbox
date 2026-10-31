@@ -10,6 +10,7 @@ import { EditBillerPage, NewBillerPage } from "./pages/BillerEditPage";
 import { BillersPage } from "./pages/BillersPage";
 import { CaptureDetailPage } from "./pages/CaptureDetailPage";
 import { CaptureListPage } from "./pages/CaptureListPage";
+import { EditMailboxPage, NewMailboxPage } from "./pages/MailboxEditPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
@@ -47,6 +48,8 @@ export function App() {
         <Route path="/billers/new" element={<NewBillerPage />} />
         <Route path="/billers/:id" element={<EditBillerPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/settings/mailboxes/new" element={<NewMailboxPage />} />
+        <Route path="/settings/mailboxes/:id" element={<EditMailboxPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AppShell>

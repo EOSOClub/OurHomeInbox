@@ -5,11 +5,22 @@
 # here: they go in .env (see .env.example). OurHomeInbox reads only this file
 # and its own .env. A misspelt or missing setting stops it with a message
 # naming it.
+#
+# The web page's Settings can change log_level and capture.every_minutes: it
+# writes them here, keeping these comments, and uses them at once. After
+# editing this file by hand, "Read config.yml again" in Settings applies it
+# without a restart (web and docker settings need docker/deploy.sh).
 
 # How much goes in the logs: debug, info, warn or error.
 log_level: info
 
-# The mailboxes to read bills from. Each one needs its own name.
+# The mailbox to read bills from, for the first start.
+#
+# Mailboxes belong to a household and are kept in OurHomeInbox's database.
+# The ones listed here are copied in once, when the household is first set up
+# (with their passwords from .env, kept encrypted), and are not read from here
+# after that: add, change and test mailboxes on the web page, Settings. You
+# can also leave this out and add the mailbox there.
 #
 # OurHomeInbox only reads mail, over IMAP. It never sends mail, so there are
 # no SMTP settings.

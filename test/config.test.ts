@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConfigError, loadConfig, loadDotEnv, mailboxSlug } from "../src/config.js";
+import { ConfigError, loadConfig, loadDotEnv, mailboxSlug, updateConfigFile } from "../src/config.js";
 
 let dir: string;
 
@@ -66,6 +66,7 @@ describe("loadConfig", () => {
       ],
       web: { port: 8080 },
       capture: { everyMinutes: 15 },
+      docker: null,
     });
   });
 
@@ -130,16 +131,13 @@ describe("loadConfig", () => {
     expect(problems[0]).toContain("Copy config.example.yml to config.yml");
   });
 
-  it("names the .env line and the mailbox when a password is missing", () => {
-    const problems = problemsOf(() => loadConfig(setup(PROTON)));
-    expect(problems).toEqual([
-      'PROTON_BRIDGE_PASSWORD is empty or missing in .env (the IMAP password for mailbox "Proton bills").',
-    ]);
-  });
-
-  it("treats an empty password, as copied from .env.example, as missing", () => {
-    const problems = problemsOf(() => loadConfig(setup(PROTON, { PROTON_BRIDGE_PASSWORD: "" })));
-    expect(problems[0]).toContain("PROTON_BRIDGE_PASSWORD is empty or missing");
+  // Mailboxes are copied into the database once, where a missing password is
+  // shown on the Settings page and can be added there; it no longer stops start.
+  it("leaves a mailbox's password empty when its .env line is missing or empty, naming the line", () => {
+    for (const env of [{}, { PROTON_BRIDGE_PASSWORD: "" }] as Array<Record<string, string>>) {
+      const [mailbox] = loadConfig(setup(PROTON, env)).mailboxes;
+      expect(mailbox?.imap).toMatchObject({ passwordEnv: "PROTON_BRIDGE_PASSWORD", password: "" });
+    }
   });
 
   it("rejects a misspelt setting instead of ignoring it", () => {
@@ -174,9 +172,8 @@ describe("loadConfig", () => {
     expect(problems[0]).toContain("at least one letter or number");
   });
 
-  it("rejects a file with no mailboxes", () => {
-    const problems = problemsOf(() => loadConfig(setup("log_level: info\n")));
-    expect(problems[0]).toContain("mailboxes");
+  it("accepts a file with no mailboxes: they are added on the web page", () => {
+    expect(loadConfig(setup("log_level: info\n")).mailboxes).toEqual([]);
   });
 
   it("accepts the docker section that deploy.sh reads", () => {
@@ -204,6 +201,48 @@ describe("loadConfig", () => {
   it("reports broken YAML as a settings problem", () => {
     const problems = problemsOf(() => loadConfig(setup("mailboxes: [\n")));
     expect(problems[0]).toContain("is not valid YAML");
+  });
+});
+
+describe("updateConfigFile", () => {
+  const FILE = `# OurHomeInbox settings.
+log_level: info # how much the log says
+
+capture:
+  # How often mail is read.
+  every_minutes: 15
+${PROTON}`;
+
+  it("changes only what was asked, keeping comments and layout, after copying the old file", () => {
+    const env = setup(FILE, { PROTON_BRIDGE_PASSWORD: "x" });
+    const backup = join(dir, "config.yml.bak");
+    updateConfigFile(env.OURHOMEINBOX_CONFIG!, { logLevel: "debug", captureEveryMinutes: 5 }, backup);
+    const text = readFileSync(env.OURHOMEINBOX_CONFIG!, "utf8");
+    expect(text).toBe(FILE.replace("log_level: info", "log_level: debug").replace("every_minutes: 15", "every_minutes: 5"));
+    expect(readFileSync(backup, "utf8")).toBe(FILE);
+    expect(loadConfig(env)).toMatchObject({ logLevel: "debug", capture: { everyMinutes: 5 } });
+  });
+
+  it("adds a section the file does not have yet", () => {
+    const env = setup(PROTON);
+    updateConfigFile(env.OURHOMEINBOX_CONFIG!, { captureEveryMinutes: 30 }, join(dir, "bak"));
+    expect(loadConfig(env).capture.everyMinutes).toBe(30);
+    expect(readFileSync(env.OURHOMEINBOX_CONFIG!, "utf8")).toContain("name: Proton bills");
+  });
+
+  it("writes nothing, and makes no copy, when a change would make the file wrong or changes nothing", () => {
+    const env = setup(FILE);
+    const backup = join(dir, "config.yml.bak");
+    expect(problemsOf(() => updateConfigFile(env.OURHOMEINBOX_CONFIG!, { captureEveryMinutes: 0 }, backup))[0]).toContain("capture.every_minutes");
+    updateConfigFile(env.OURHOMEINBOX_CONFIG!, { logLevel: "info", captureEveryMinutes: 15 }, backup);
+    expect(readFileSync(env.OURHOMEINBOX_CONFIG!, "utf8")).toBe(FILE);
+    expect(() => readFileSync(backup)).toThrow();
+  });
+
+  it("refuses to change a file that is already broken", () => {
+    const env = setup("log_level: [\n");
+    expect(problemsOf(() => updateConfigFile(env.OURHOMEINBOX_CONFIG!, { logLevel: "warn" }, join(dir, "bak")))[0]).toContain("is not valid YAML");
+    expect(readFileSync(env.OURHOMEINBOX_CONFIG!, "utf8")).toBe("log_level: [\n");
   });
 });
 

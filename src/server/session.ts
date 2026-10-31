@@ -1,8 +1,9 @@
-// Signing in and out, and first-time setup:
-//   GET    /api/session   who is signed in, and whether setup is still needed
-//   POST   /api/session   sign in
-//   DELETE /api/session   sign out
-//   POST   /api/setup     create the household and its first (admin) account
+// Signing in and out, first-time setup, and your own password:
+//   GET    /api/session            who is signed in, and whether setup is still needed
+//   POST   /api/session            sign in
+//   DELETE /api/session            sign out
+//   POST   /api/setup              create the household and its first (admin) account
+//   PUT    /api/account/password   change your own password
 // Also the middleware that reads the session cookie on every /api request.
 
 import { Hono, type Context, type MiddlewareHandler } from "hono";
@@ -14,6 +15,7 @@ import {
   deleteSession,
   findSession,
   hashPassword,
+  hashToken,
   LoginLimiter,
   SESSION_COOKIE,
   verifyAgainstDummy,
@@ -25,11 +27,15 @@ import { apiError, clientIp, isHttps, jsonBody, MESSAGES, type AppEnv } from "./
 export interface SessionDeps {
   db: Database;
   now: () => Date;
+  /** Called once first-time setup has made the household (to copy config.yml's mailboxes into it). */
+  onSetUp?: () => void;
 }
 
 const LOGIN_FAILED = "That email and password do not match an account.";
 const TOO_MANY = "Too many sign-in attempts. Please wait 15 minutes and try again.";
 const ALREADY_SET_UP = "OurHomeInbox is already set up. Sign in instead.";
+const WRONG_CURRENT = "Your current password is not right.";
+const TOO_MANY_TRIES = "Too many wrong passwords. Please wait 15 minutes and try again.";
 
 // Generous upper limits: they only stop silly sizes, never a real name.
 const MAX_TEXT = 200;
@@ -63,6 +69,20 @@ const setupSchema = z.object(
     password: z
       .string({ error: "Choose a password." })
       .min(MIN_PASSWORD_LENGTH, `Choose a password of at least ${MIN_PASSWORD_LENGTH} characters.`)
+      .max(MAX_PASSWORD, `Keep the password under ${MAX_PASSWORD} characters.`),
+  },
+  { error: MESSAGES.badShape },
+);
+
+const passwordChangeSchema = z.object(
+  {
+    currentPassword: z
+      .string({ error: "Enter your current password." })
+      .min(1, "Enter your current password.")
+      .max(MAX_PASSWORD, WRONG_CURRENT),
+    newPassword: z
+      .string({ error: "Choose a new password." })
+      .min(MIN_PASSWORD_LENGTH, `Choose a new password of at least ${MIN_PASSWORD_LENGTH} characters.`)
       .max(MAX_PASSWORD, `Keep the password under ${MAX_PASSWORD} characters.`),
   },
   { error: MESSAGES.badShape },
@@ -182,10 +202,36 @@ export function sessionRoutes(deps: SessionDeps): Hono<AppEnv> {
       return user.lastInsertRowid;
     });
     if (userId === null) return apiError(c, 409, ALREADY_SET_UP);
+    deps.onSetUp?.();
 
     const session = createSession(db, userId, at);
     setSessionCookie(c, session.token, session.expiresAt, at);
     return respond(c, findSession(db, session.token, at));
+  });
+
+  // Changing your own password. Wrong guesses count toward the same limit as
+  // signing in. A wrong current password is a 400, not a 401, which would
+  // sign the page out. Your other sessions are signed out; this one stays.
+  app.put("/account/password", jsonBody(passwordChangeSchema), async (c) => {
+    const user = c.var.user as SessionUser;
+    const { currentPassword, newPassword } = c.req.valid("json");
+    const key = user.email.toLowerCase();
+    const ip = clientIp(c);
+    if (limiter.blocked(key, ip)) return apiError(c, 429, TOO_MANY_TRIES);
+    const row = db.get<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = ?", user.id);
+    if (!row || !(await verifyPassword(currentPassword, row.password_hash))) {
+      limiter.fail(key, ip);
+      return apiError(c, 400, WRONG_CURRENT);
+    }
+    if (newPassword === currentPassword) return apiError(c, 400, "Choose a new password that is different from your current one.");
+    const passwordHash = await hashPassword(newPassword);
+    const keep = c.var.sessionToken === null ? "" : hashToken(c.var.sessionToken);
+    db.transaction(() => {
+      db.run("UPDATE users SET password_hash = ? WHERE id = ?", passwordHash, user.id);
+      db.run("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", user.id, keep);
+    });
+    limiter.succeed(key);
+    return c.body(null, 204);
   });
 
   return app;

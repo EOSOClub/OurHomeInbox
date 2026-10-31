@@ -1,6 +1,9 @@
 # OurHomeInbox. Reads its two settings files from the repo root:
-#   .env        secrets, passed in as environment variables
-#   config.yml  everything else, mounted read-only
+#   .env        secrets, passed in as environment variables (a changed one
+#               takes effect when deploy.sh runs the container again)
+#   config.yml  the install's settings, mounted writable: the web page's
+#               Settings save the reading schedule and log level into it
+#               (keeping its comments) and use them at once
 #
 # Mail is read over IMAP from the server set in config.yml. For Proton Mail
 # that is a Proton Mail Bridge container on the same Docker network, which
@@ -51,15 +54,18 @@ services:
         format: raw
     volumes:
       # Long form so a missing config.yml is an error. The short form would
-      # quietly create an empty folder called config.yml instead.
+      # quietly create an empty folder called config.yml instead. Writable for
+      # the web page's Settings; the old file is copied to data/config.yml.bak
+      # before each change.
       - type: bind
         source: ../config.yml
         target: /app/config.yml
-        read_only: true
+        read_only: false
         bind:
           create_host_path: false
-      # Captured mail (raw emails, attachments, what was read from them) and
-      # the accounts database. Real, private data; .gitignore keeps it out of git.
+      # Captured mail (raw emails, attachments, what was read from them), the
+      # database (accounts, billers, mailboxes with their passwords encrypted)
+      # and config.yml's backup. Real, private data; .gitignore keeps it out of git.
       - type: bind
         source: ../data
         target: /app/data

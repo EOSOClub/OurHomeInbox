@@ -10,25 +10,29 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
-import type { Config } from "../config.js";
 import { log } from "../log.js";
-import type { HealthResponse } from "../shared/api.js";
+import type { CheckingState, HealthResponse } from "../shared/api.js";
 import type { CaptureStore } from "../store.js";
 import { billerRoutes } from "./billers.js";
 import { captureRoutes } from "./captures.js";
 import type { Database } from "./db.js";
 import { apiError, crossSiteCheck, MAX_BODY_BYTES, MESSAGES, securityHeaders, type AppEnv } from "./http.js";
+import { mailboxRoutes, type Mailboxes } from "./mailboxes.js";
 import { ruleRoutes } from "./rules.js";
 import { loadSession, requireSignIn, sessionRoutes } from "./session.js";
-import { settingsRoutes } from "./settings.js";
+import { settingsRoutes, type InstallSettings } from "./settings.js";
 import { webRoutes } from "./web.js";
 
 export interface AppDeps {
-  config: Config;
-  /** Shown in SettingsResponse. */
-  configPath: string;
+  /** The install's settings (config.yml), changeable while running. */
+  settings: InstallSettings;
   db: Database;
   store: CaptureStore;
+  mailboxes: Mailboxes;
+  /** When mail is read, and reading it now. */
+  checking: { state(): CheckingState; checkNow(): "started" | "running" | "stopped" };
+  /** Where the key protecting saved passwords comes from. */
+  secretKey: "env" | "file";
   /** The folder with the built web app (index.html), or null to serve no UI. */
   webRoot: string | null;
   version: string;
@@ -53,11 +57,21 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     const body: HealthResponse = { ok: true, version: deps.version };
     return c.json(body);
   });
-  app.route("/api", sessionRoutes({ db: deps.db, now }));
-  app.route("/api", captureRoutes({ config: deps.config, store: deps.store, db: deps.db }));
-  app.route("/api", settingsRoutes({ config: deps.config, configPath: deps.configPath }));
+  const { settings, mailboxes } = deps;
+  // First-time setup makes the household that config.yml's mailboxes are copied into.
+  app.route("/api", sessionRoutes({ db: deps.db, now, onSetUp: () => mailboxes.importFromConfig(settings.config) }));
+  app.route("/api", captureRoutes({ store: deps.store, db: deps.db, mailboxes }));
+  app.route(
+    "/api",
+    settingsRoutes({
+      settings,
+      secretKey: deps.secretKey,
+      ignoredMailboxes: () => (mailboxes.imported() ? settings.config.mailboxes.length : 0),
+    }),
+  );
+  app.route("/api", mailboxRoutes({ mailboxes, checking: deps.checking }));
   app.route("/api", billerRoutes({ db: deps.db, now }));
-  app.route("/api", ruleRoutes({ config: deps.config, store: deps.store, db: deps.db, now }));
+  app.route("/api", ruleRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
   // Before the web app's catch-all, so an unknown API address is a JSON 404, never the app's page.
   app.all("/api", (c) => apiError(c, 404, MESSAGES.notFound));
   app.all("/api/*", (c) => apiError(c, 404, MESSAGES.notFound));

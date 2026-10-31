@@ -1,27 +1,18 @@
 // Reading captured mail back from the capture store's folders, for the routes
-// that show it (captures.ts) and the ones that try biller rules on it
-// (rules.ts). Everything here came from strangers' email: it is only read.
+// that show it (captures.ts), the ones that try biller rules on it (rules.ts)
+// and the invoice pass (invoices.ts). Always for a household's own mailboxes
+// (mailboxes.ts). Everything here came from strangers' email: it is only read.
 
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Config, MailboxConfig } from "../config.js";
-import { mailboxSlug } from "../config.js";
 import { log } from "../log.js";
 import type { Capture } from "../shared/capture.js";
 import type { InvoiceRecord } from "../shared/invoice.js";
 import type { CaptureStore } from "../store.js";
+import type { MailboxPlace } from "./mailboxes.js";
 
 export const UID_VALIDITY = /^\d+$/;
 export const UID = /^[1-9]\d*$/;
-
-/**
- * v1 has one household, and every mailbox in config.yml belongs to it, so a
- * signed-in user sees every configured mailbox's mail. When mailboxes become
- * per-household, this is where the list gets filtered by c.var.user.household.
- */
-export function householdMailboxes(config: Config): Map<string, MailboxConfig> {
-  return new Map(config.mailboxes.map((mailbox) => [mailboxSlug(mailbox.name), mailbox]));
-}
 
 /** A light shape check, so a damaged capture.json is skipped instead of breaking the list. */
 function isCapture(value: unknown): value is Capture {
@@ -88,7 +79,7 @@ export interface StoredCapture {
   /** "<mailboxSlug>/<uidValidity>/<uid>", as in CaptureListItem.id. */
   id: string;
   slug: string;
-  mailbox: MailboxConfig;
+  mailbox: MailboxPlace;
   uidValidity: string;
   uid: number;
   /** The message's folder, for warnings. */
@@ -97,9 +88,10 @@ export interface StoredCapture {
   invoice: InvoiceRecord | null;
 }
 
-/** Every captured email in the household's mailboxes. A damaged one is skipped with a warning. */
-export async function* eachCapture(config: Config, store: CaptureStore): AsyncGenerator<StoredCapture> {
-  for (const [slug, mailbox] of householdMailboxes(config)) {
+/** Every captured email in the given mailboxes (a household's). A damaged one is skipped with a warning. */
+export async function* eachCapture(mailboxes: Iterable<MailboxPlace>, store: CaptureStore): AsyncGenerator<StoredCapture> {
+  for (const mailbox of mailboxes) {
+    const { slug } = mailbox;
     const mailboxDir = join(store.root, slug);
     for (const uidValidity of await subfolders(mailboxDir, UID_VALIDITY)) {
       for (const uidName of await subfolders(join(mailboxDir, uidValidity), UID)) {

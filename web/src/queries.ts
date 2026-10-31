@@ -13,6 +13,7 @@ export const queryKeys = {
   // Under the email, so whatever refreshes the email refreshes these too.
   choices: (id: string, field: FieldName) => ["captures", id, "choices", field] as const,
   settings: ["settings"] as const,
+  mailboxes: ["mailboxes"] as const,
   billers: ["billers"] as const,
   biller: (id: number) => ["billers", id] as const,
   billerRules: (id: number) => ["billers", id, "rules"] as const,
@@ -73,6 +74,24 @@ export function useCapture(id: string) {
 
 export function useSettings(enabled = true) {
   return useQuery({ queryKey: queryKeys.settings, queryFn: ({ signal }) => api.getSettings(signal), enabled });
+}
+
+/**
+ * The household's mailboxes and when mail is read. While a read is running it
+ * is asked again every few seconds, so the page shows when it finishes.
+ */
+export function useMailboxes() {
+  return useQuery({
+    queryKey: queryKeys.mailboxes,
+    queryFn: ({ signal }) => api.listMailboxes(signal),
+    refetchInterval: (query) => (query.state.data?.checking.running ? 2000 : false),
+  });
+}
+
+/** After a mailbox is added, changed or removed, or mail was read: the mailboxes, and every email (which mailboxes are shown). */
+export function refreshAfterMailboxChange(client: QueryClient): void {
+  void client.invalidateQueries({ queryKey: queryKeys.mailboxes });
+  void client.invalidateQueries({ queryKey: queryKeys.captures });
 }
 
 export function useBillers() {

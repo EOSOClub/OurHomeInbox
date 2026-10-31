@@ -11,7 +11,7 @@ import { ErrorState, LoadingState, PageTitle } from "../components/ui";
 import { formatDateTime, formatListDate, plural, senderDisplay, subjectDisplay } from "../format";
 import { captureDate, filterCaptures, type BillerFilter } from "../mail/captureList";
 import { KIND_LABELS, summaryLine } from "../mail/picked";
-import { useCaptures, useSettings } from "../queries";
+import { useCaptures, useMailboxes } from "../queries";
 
 function Count({ icon, count, one, many }: { icon: ReactNode; count: number; one: string; many: string }) {
   return (
@@ -78,13 +78,23 @@ function CaptureRow({ item }: { item: CaptureListItem }) {
 }
 
 function EmptyState() {
-  const settings = useSettings();
-  const minutes = settings.data?.capture.everyMinutes;
+  const mailboxes = useMailboxes();
+  const data = mailboxes.data;
+  const minutes = data?.checking.everyMinutes;
   const often = minutes ? (minutes === 1 ? "every minute" : `every ${minutes} minutes`) : "every few minutes";
   return (
     <div className="rounded-lg border border-dashed border-line px-4 py-10 text-center text-muted">
       <Inbox aria-hidden className="mx-auto mb-2 size-8" />
-      <p>No mail captured yet. OurHomeInbox reads each mailbox's bills folder {often}.</p>
+      {data && data.mailboxes.length === 0 ? (
+        <p>
+          No mailboxes are set up yet.{" "}
+          <Link to="/settings" className="font-medium text-accent hover:underline">
+            {data.canEdit ? "Add one in Settings." : "Ask an admin to add one in Settings."}
+          </Link>
+        </p>
+      ) : (
+        <p>No mail captured yet. OurHomeInbox reads each mailbox's bills folder {often}.</p>
+      )}
     </div>
   );
 }

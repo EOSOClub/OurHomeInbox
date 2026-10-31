@@ -1,12 +1,21 @@
 // Loads the two settings files every setup has:
 //   .env        secrets (passwords, tokens). Never committed. See .env.example.
-//   config.yml  everything else a household might change. See config.example.yml.
+//   config.yml  the install's settings: how often mail is read, the log level,
+//               the web port and Docker's. See config.example.yml.
 // Docker passes .env in as environment variables and mounts config.yml, so the
 // same code reads both inside and outside a container.
+//
+// Mailboxes belong to a household and live in the database (server/mailboxes.ts).
+// Mailboxes listed in config.yml (as docker/deploy.sh writes the first one)
+// are copied into the database once, with their passwords from .env, and are
+// not read after that.
+//
+// The web page changes config.yml through updateConfigFile, which keeps the
+// file's comments and layout and checks the result before writing it.
 
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseEnv } from "node:util";
-import { parse as parseYaml, YAMLParseError } from "yaml";
+import { parse as parseYaml, parseDocument, YAMLParseError } from "yaml";
 import { z } from "zod";
 
 /** Used when OURHOMEINBOX_CONFIG is not set. Docker sets it to /app/config.yml. */
@@ -15,20 +24,10 @@ export const DEFAULT_CONFIG_PATH = "config.yml";
 export const DEFAULT_WEB_PORT = 8080;
 export const DEFAULT_CAPTURE_MINUTES = 15;
 
-export const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
-export type LogLevel = (typeof LOG_LEVELS)[number];
+// The choices live in shared/settings.ts, so the web app offers the same ones.
+import { LOG_LEVELS, MAX_CAPTURE_MINUTES, MIN_CAPTURE_MINUTES, PROVIDERS, SECURITY_MODES, type LogLevel, type Provider, type Security } from "./shared/settings.js";
 
-export const PROVIDERS = ["proton-bridge"] as const;
-export type Provider = (typeof PROVIDERS)[number];
-
-/**
- * How an IMAP connection is protected:
- *   none      no encryption at all
- *   starttls  connects unencrypted, then must switch to encryption (STARTTLS)
- *   tls       encrypted from the first byte ("SSL/TLS" in most mail apps)
- */
-export const SECURITY_MODES = ["none", "starttls", "tls"] as const;
-export type Security = (typeof SECURITY_MODES)[number];
+export { LOG_LEVELS, PROVIDERS, SECURITY_MODES, type LogLevel, type Provider, type Security };
 
 // .strict() turns a misspelt setting into an error instead of silently ignoring it.
 // Every connection value is required: nothing about the connection is implied.
@@ -57,9 +56,10 @@ const mailboxSchema = z
 const fileSchema = z
   .object({
     log_level: z.enum(LOG_LEVELS).default("info"),
+    // Copied into the database once (see the top of this file); none is fine.
     mailboxes: z
       .array(mailboxSchema)
-      .min(1, "add at least one mailbox")
+      .default([])
       .refine((list) => new Set(list.map((m) => m.name)).size === list.length, "each mailbox needs its own name")
       .refine((list) => list.every((m) => mailboxSlug(m.name) !== ""), "a mailbox name needs at least one letter or number")
       .refine(
@@ -71,7 +71,7 @@ const fileSchema = z
       .strict()
       .default({ port: DEFAULT_WEB_PORT }),
     capture: z
-      .object({ every_minutes: z.number().int().min(1).max(1440).default(DEFAULT_CAPTURE_MINUTES) })
+      .object({ every_minutes: z.number().int().min(MIN_CAPTURE_MINUTES).max(MAX_CAPTURE_MINUTES).default(DEFAULT_CAPTURE_MINUTES) })
       .strict()
       .default({ every_minutes: DEFAULT_CAPTURE_MINUTES }),
     // Read by docker/deploy.sh for Docker Compose, not by the app. Checked here
@@ -95,11 +95,13 @@ export interface ImapConfig {
   port: number;
   security: Security;
   username: string;
-  /** The .env line the password came from (shown in settings; the password never is). */
+  /** The .env line the password came from. */
   passwordEnv: string;
+  /** Empty when that line is missing or empty. */
   password: string;
 }
 
+/** A mailbox as written in config.yml: only read once, to copy it into the database. */
 export interface MailboxConfig {
   name: string;
   provider: Provider;
@@ -107,11 +109,20 @@ export interface MailboxConfig {
   folder: string;
 }
 
+export interface DockerConfig {
+  network?: string;
+  port?: number;
+  bind?: string;
+}
+
 export interface Config {
   logLevel: LogLevel;
+  /** Mailboxes listed in config.yml, copied into the database once (see the top of this file). */
   mailboxes: MailboxConfig[];
   web: { port: number };
   capture: { everyMinutes: number };
+  /** Read by docker/deploy.sh; shown, never used by the app. */
+  docker: DockerConfig | null;
 }
 
 /** The folder name a mailbox's captured mail is kept under: "Proton bills" -> "proton-bills". */
@@ -144,48 +155,79 @@ export function loadDotEnv(path = ".env", env: NodeJS.ProcessEnv = process.env):
   }
 }
 
-/** Reads config.yml, checks it, and fills in each mailbox's IMAP password from the environment. */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const path = env.OURHOMEINBOX_CONFIG || DEFAULT_CONFIG_PATH;
+/** Where config.yml is: OURHOMEINBOX_CONFIG (Docker sets /app/config.yml), else ./config.yml. */
+export function configPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.OURHOMEINBOX_CONFIG || DEFAULT_CONFIG_PATH;
+}
+
+function readYaml(path: string): unknown {
   if (!existsSync(path)) {
     throw new ConfigError([`No settings file at ${path}. Copy config.example.yml to config.yml and fill it in.`]);
   }
-
-  let raw: unknown;
   try {
-    raw = parseYaml(readFileSync(path, "utf8"));
+    return parseYaml(readFileSync(path, "utf8"));
   } catch (err) {
     if (err instanceof YAMLParseError) throw new ConfigError([`${path} is not valid YAML: ${err.message}`]);
     throw err;
   }
+}
 
+function checkFile(raw: unknown, path: string): z.output<typeof fileSchema> {
   const parsed = fileSchema.safeParse(raw ?? {});
   if (!parsed.success) {
     throw new ConfigError(parsed.error.issues.map((issue) => `${path}: ${formatPath(issue.path)}: ${issue.message}`));
   }
+  return parsed.data;
+}
 
-  const problems: string[] = [];
-  const mailboxes = parsed.data.mailboxes.map((mailbox): MailboxConfig => {
+/**
+ * Reads config.yml and checks it. Each listed mailbox gets its IMAP password
+ * from the environment; a missing one is left empty, to be set on the web page.
+ */
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const path = configPath(env);
+  const file = checkFile(readYaml(path), path);
+  const mailboxes = file.mailboxes.map((mailbox): MailboxConfig => {
     const { password_env, ...imap } = mailbox.imap;
-    const password = env[password_env] ?? "";
-    if (password === "") {
-      problems.push(`${password_env} is empty or missing in .env (the IMAP password for mailbox "${mailbox.name}").`);
-    }
     return {
       name: mailbox.name,
       provider: mailbox.provider,
-      imap: { ...imap, passwordEnv: password_env, password },
+      imap: { ...imap, passwordEnv: password_env, password: env[password_env] ?? "" },
       folder: mailbox.folder,
     };
   });
-  if (problems.length > 0) throw new ConfigError(problems);
-
   return {
-    logLevel: parsed.data.log_level,
+    logLevel: file.log_level,
     mailboxes,
-    web: { port: parsed.data.web.port },
-    capture: { everyMinutes: parsed.data.capture.every_minutes },
+    web: { port: file.web.port },
+    capture: { everyMinutes: file.capture.every_minutes },
+    docker: file.docker ?? null,
   };
+}
+
+/** The settings the web page may change in config.yml. */
+export interface ConfigChanges {
+  logLevel?: LogLevel;
+  captureEveryMinutes?: number;
+}
+
+/**
+ * Writes `changes` into config.yml, keeping its comments and layout, after
+ * checking the whole result. The file is written in place, because in Docker
+ * it is mounted as a single file and cannot be swapped for a new one; so the
+ * old file is first copied to `backupPath`.
+ */
+export function updateConfigFile(path: string, changes: ConfigChanges, backupPath: string): void {
+  readYaml(path); // a missing or broken file is reported the usual way
+  const text = readFileSync(path, "utf8");
+  const doc = parseDocument(text);
+  if (changes.logLevel !== undefined) doc.setIn(["log_level"], changes.logLevel);
+  if (changes.captureEveryMinutes !== undefined) doc.setIn(["capture", "every_minutes"], changes.captureEveryMinutes);
+  const next = doc.toString();
+  checkFile(parseYaml(next), path);
+  if (next === text) return;
+  copyFileSync(path, backupPath);
+  writeFileSync(path, next);
 }
 
 /** `["mailboxes", 0, "username"]` -> `mailboxes[0].username` */
