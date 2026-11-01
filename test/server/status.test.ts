@@ -117,7 +117,7 @@ describe("GET /api/status", () => {
     expect(body.mailboxes.map((m) => m.name)).toEqual(["Proton bills"]);
   });
 
-  it("shows the recent problems from the log to an admin only", async () => {
+  it("shows the recent problems from the log to everyone in the household", async () => {
     reading.fail = "Bridge is not running";
     await server.service.mailboxes.readAll();
     const admin = await status();
@@ -130,9 +130,10 @@ describe("GET /api/status", () => {
       await hashPassword("member password 1"),
     );
     const member = sessionCookie(await call(server.app, "/api/session", { method: "POST", body: { email: "kim@example.com", password: "member password 1" } }))!;
+    // Everyone in the household sees what went wrong, not only an admin.
     const seen = await status(member);
-    expect(seen.problems).toBeNull();
-    expect(seen.canEdit).toBe(false);
+    expect(seen.problems?.[0]).toMatchObject({ level: "error", message: '"Proton bills": Bridge is not running' });
+    expect(seen.canEdit).toBe(true);
     expect(seen.mailboxes).toHaveLength(1);
   });
 

@@ -79,8 +79,9 @@ function Count({ label, value, list, children }: { label: string; value: number;
     <DetailRow label={label}>
       <span className="font-medium">{value}</span>
       {list && value > 0 ? (
-        <Link to={listPathWith(list)} className="ml-3 text-sm font-medium text-accent hover:underline">
-          Show<span className="sr-only"> {label.toLowerCase()}</span>
+        // Named in full for screen readers; a space inside a hidden span is dropped from the name ("Showto review").
+        <Link to={listPathWith(list)} aria-label={`Show ${label.toLowerCase()}`} className="ml-3 text-sm font-medium text-accent hover:underline">
+          Show
         </Link>
       ) : null}
       {children ? <span className="block text-sm text-muted">{children}</span> : null}

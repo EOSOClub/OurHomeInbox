@@ -1,11 +1,14 @@
 // The household's mailboxes: where its bills are read from.
 //   GET    /api/mailboxes        the household's mailboxes and when mail is read
-//   POST   /api/mailboxes        add one (admin)
-//   PUT    /api/mailboxes/:id    change one; a password left out keeps the saved one (admin)
-//   DELETE /api/mailboxes/:id    remove one; its captured mail stays on disk (admin)
-//   POST   /api/mailboxes/:id/restore  bring a removed one back with its mail (admin)
-//   POST   /api/mailboxes/test   try settings before saving them (admin)
+//   POST   /api/mailboxes        add one
+//   PUT    /api/mailboxes/:id    change one; a password left out keeps the saved one
+//   DELETE /api/mailboxes/:id    remove one; its captured mail stays on disk
+//   POST   /api/mailboxes/:id/restore  bring a removed one back with its mail
+//   POST   /api/mailboxes/test   try settings before saving them
 //   POST   /api/mailboxes/check  read every mailbox now
+//
+// Everyone in the household can change its mailboxes (owner, 2026-11-01:
+// managing the household's money is a shared effort).
 //
 // Mailboxes are kept in the database, per household, with their passwords
 // encrypted (secrets.ts); a password is never sent back, only whether one is
@@ -47,7 +50,6 @@ import { apiError, householdOf, jsonBody, MESSAGES, type AppEnv } from "./http.j
 import type { SecretBox } from "./secrets.js";
 
 const NOT_FOUND = "That mailbox was not found. It may have been removed.";
-const ADMIN_ONLY = "Only an admin can change mailboxes.";
 const KEY_CHANGED = "The saved password can no longer be read: the key that protects saved passwords has changed. Enter the password again.";
 const IMPORTED_KEY = "config_mailboxes_imported";
 const LOST_FOLDERS_KEY = "lost_mail_folders_checked";
@@ -633,8 +635,6 @@ function mailboxId(c: Context): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
-const isAdmin = (c: Context<AppEnv>) => c.var.user?.isAdmin === true;
-
 /** Tries a connection, with an answer in plain words whatever happens. */
 async function runTest(connection: MailboxToRead): Promise<MailboxTestResponse> {
   try {
@@ -657,14 +657,14 @@ export function mailboxRoutes(deps: MailboxDeps): Hono<AppEnv> {
       mailboxes: mailboxes.list(householdOf(c)),
       removed: mailboxes.removed(householdOf(c)),
       checking: checking.state(),
-      canEdit: isAdmin(c),
+      // Everyone signed in; kept in the reply so the page can still show a read-only view if that ever changes.
+      canEdit: true,
     };
     return c.json(body);
   });
 
   // Before /mailboxes/:id, so "test" and "check" are never read as an id.
   app.post("/mailboxes/test", jsonBody(testSchema), async (c) => {
-    if (!isAdmin(c)) return apiError(c, 403, ADMIN_ONLY);
     const connection = mailboxes.connectionFor(householdOf(c), c.req.valid("json"));
     if (!connection) return apiError(c, 404, NOT_FOUND);
     if ("needsPassword" in connection) return apiError(c, 400, connection.needsPassword);
@@ -681,14 +681,12 @@ export function mailboxRoutes(deps: MailboxDeps): Hono<AppEnv> {
   });
 
   app.post("/mailboxes", jsonBody(mailboxSchema), (c) => {
-    if (!isAdmin(c)) return apiError(c, 403, ADMIN_ONLY);
     const result = mailboxes.create(householdOf(c), c.req.valid("json"));
     if ("problem" in result) return apiError(c, 409, result.problem);
     return c.json(result.mailbox, 201);
   });
 
   app.put("/mailboxes/:id", jsonBody(mailboxSchema), (c) => {
-    if (!isAdmin(c)) return apiError(c, 403, ADMIN_ONLY);
     const id = mailboxId(c);
     if (id === null) return apiError(c, 404, NOT_FOUND);
     const result = mailboxes.update(householdOf(c), id, c.req.valid("json"));
@@ -699,14 +697,12 @@ export function mailboxRoutes(deps: MailboxDeps): Hono<AppEnv> {
   });
 
   app.delete("/mailboxes/:id", (c) => {
-    if (!isAdmin(c)) return apiError(c, 403, ADMIN_ONLY);
     const id = mailboxId(c);
     if (id === null || !mailboxes.remove(householdOf(c), id)) return apiError(c, 404, NOT_FOUND);
     return c.body(null, 204);
   });
 
   app.post("/mailboxes/:id/restore", jsonBody(mailboxSchema), (c) => {
-    if (!isAdmin(c)) return apiError(c, 403, ADMIN_ONLY);
     const id = mailboxId(c);
     if (id === null) return apiError(c, 404, NOT_FOUND);
     const result = mailboxes.restore(householdOf(c), id, c.req.valid("json"));

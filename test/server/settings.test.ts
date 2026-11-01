@@ -86,7 +86,7 @@ describe("changing settings", () => {
     }
   });
 
-  it("lets only an admin change settings or reload them", async () => {
+  it("lets everyone in the household change settings or reload them, not only an admin", async () => {
     const household = server.db.get<{ id: number }>("SELECT id FROM households")!.id;
     server.db.run(
       "INSERT INTO users (household_id, email, name, password_hash, is_admin, created_at) VALUES (?, 'kim@example.com', 'Kim', ?, 0, '2026-10-29')",
@@ -94,9 +94,11 @@ describe("changing settings", () => {
       await hashPassword("member password 1"),
     );
     const member = sessionCookie(await call(server.app, "/api/session", { method: "POST", body: { email: "kim@example.com", password: "member password 1" } }))!;
-    expect((await json<SettingsResponse>(await get("/api/settings", member))).canEdit).toBe(false);
-    expect((await send("PUT", "/api/settings", { logLevel: "debug", captureEveryMinutes: 5 }, member)).status).toBe(403);
-    expect((await send("POST", "/api/settings/reload", undefined, member)).status).toBe(403);
+    expect((await json<SettingsResponse>(await get("/api/settings", member))).canEdit).toBe(true);
+    const saved = await send("PUT", "/api/settings", { logLevel: "debug", captureEveryMinutes: 5 }, member);
+    expect(saved.status).toBe(200);
+    expect(await json<SettingsResponse>(saved)).toMatchObject({ logLevel: "debug", captureEveryMinutes: 5 });
+    expect((await send("POST", "/api/settings/reload", undefined, member)).status).toBe(200);
   });
 });
 

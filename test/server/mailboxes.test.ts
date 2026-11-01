@@ -235,22 +235,19 @@ describe("adding and changing a mailbox", () => {
     expect(await json<MailboxInfo>(restored)).toMatchObject({ name: "Old bills", slug: "proton-bills" });
   });
 
-  it("lets only an admin change mailboxes; a member sees them, without passwords", async () => {
+  it("lets everyone in the household change mailboxes, not only an admin, and never shows a password", async () => {
     const member = await memberCookie();
     const seen = await list(member);
-    expect(seen.canEdit).toBe(false);
+    expect(seen.canEdit).toBe(true);
     expect(seen.mailboxes).toHaveLength(1);
-    const id = seen.mailboxes[0]!.id;
-    for (const [method, path, body] of [
-      ["POST", "/api/mailboxes", WATER],
-      ["PUT", `/api/mailboxes/${id}`, WATER],
-      ["DELETE", `/api/mailboxes/${id}`, undefined],
-      ["POST", `/api/mailboxes/${id}/restore`, WATER],
-      ["POST", "/api/mailboxes/test", WATER],
-    ] as const) {
-      const res = await send(method, path, body, member);
-      expect(res.status, `${method} ${path}`).toBe(403);
-    }
+    const added = await send("POST", "/api/mailboxes", WATER, member);
+    expect(added.status).toBe(201);
+    const water = await json<MailboxInfo>(added);
+    expect(JSON.stringify(water)).not.toContain(WATER.password);
+    expect((await send("PUT", `/api/mailboxes/${water.id}`, { ...WATER, name: "Water", password: undefined }, member)).status).toBe(200);
+    expect((await send("DELETE", `/api/mailboxes/${water.id}`, undefined, member)).status).toBe(204);
+    expect((await send("POST", `/api/mailboxes/${water.id}/restore`, { ...WATER, name: "Water again" }, member)).status).toBe(200);
+    expect(JSON.stringify(await list(member))).not.toContain(WATER.password);
   });
 
   it("never reaches another household's mailbox or its mail", async () => {

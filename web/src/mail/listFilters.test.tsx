@@ -155,7 +155,9 @@ describe("the captured-mail list's filters", () => {
     fireEvent.click(within(panel).getByRole("checkbox", { name: "Past due" }));
     expect(rows()).toEqual(["Final notice"]);
     expect(count()).toBe("Showing 1 of 3 emails");
-    expect(button.textContent).toContain("2 on");
+    // Spoken as one name with its spaces (it once ran together as "Filters2on").
+    expect(screen.getByRole("button", { name: "Filters, 2 on" })).toBe(button);
+    expect(button.textContent).toContain("2");
 
     fireEvent.click(within(panel).getByRole("checkbox", { name: "Needs a check" }));
     expect(screen.getByText("No captured email matches these filters.")).toBeTruthy();

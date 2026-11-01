@@ -33,6 +33,11 @@ import type {
   Tag,
   TagInput,
   TagListResponse,
+  HouseholdUser,
+  UserInput,
+  UserListResponse,
+  UserPasswordRequest,
+  UserUpdate,
 } from "../../src/shared/api";
 import type { FieldName } from "../../src/shared/extraction";
 
@@ -166,4 +171,9 @@ export const api = {
   deleteTag: (id: number) => request<void>("DELETE", `/api/tags/${id}`),
   changeCaptureTags: (body: CaptureTagsRequest) => request<CaptureTagsResponse>("POST", "/api/captures/tags", { body }),
   reviewCaptures: (body: CaptureReviewRequest) => request<CaptureReviewResponse>("PUT", "/api/captures/review", { body }),
+  listUsers: (signal?: AbortSignal) => request<UserListResponse>("GET", "/api/users", { signal }),
+  addUser: (body: UserInput) => request<HouseholdUser>("POST", "/api/users", { body }),
+  updateUser: (id: number, body: UserUpdate) => request<HouseholdUser>("PUT", `/api/users/${id}`, { body }),
+  setUserPassword: (id: number, body: UserPasswordRequest) => request<void>("PUT", `/api/users/${id}/password`, { body }),
+  removeUser: (id: number) => request<void>("DELETE", `/api/users/${id}`),
 };

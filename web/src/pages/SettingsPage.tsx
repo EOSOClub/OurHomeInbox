@@ -1,7 +1,9 @@
 // Settings: the household's mailboxes (with how each last read went,
-// "Check mail now", and removed ones to restore), your own password, and the install's settings from
-// config.yml (how often mail is read and the log level, which an admin can
-// change or reload without a restart). A password is never shown.
+// "Check mail now", and removed ones to restore), your own password, the
+// household's users (see users/UsersCard.tsx), and the install's settings
+// from config.yml (how often mail is read and the log level, changed or
+// reloaded without a restart). Everyone signed in can change all of it; the
+// read-only views stay for when `canEdit` is false. A password is never shown.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, Plus, RotateCw, TriangleAlert } from "lucide-react";
@@ -15,6 +17,7 @@ import { CheckMailNow, useRefreshWhenReadFinishes } from "../components/CheckMai
 import { Button, buttonClasses, Card, ChoiceField, DetailRow, ErrorState, LoadingState, Notice, PageTitle, TextField } from "../components/ui";
 import { checkingLine, emailCount, lastCheckLine, LOG_LEVEL_CHOICES, PROVIDER_LABELS, SECURITY_CHOICES } from "../mailboxes";
 import { queryKeys, useMailboxes, useSession, useSettings } from "../queries";
+import { UsersCard } from "../users/UsersCard";
 
 function PasswordState({ mailbox }: { mailbox: MailboxInfo }) {
   if (mailbox.imap.passwordSet) {
@@ -387,6 +390,7 @@ export function SettingsPage() {
       <div className="flex flex-col gap-5">
         <MailboxesCard />
         {user ? <AccountCard user={user} /> : null}
+        <UsersCard />
         <InstallCard />
       </div>
     </div>

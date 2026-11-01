@@ -1,7 +1,11 @@
 // The install's settings (config.yml), changed and reloaded without a restart:
 //   GET  /api/settings          the settings in use
-//   PUT  /api/settings          change how often mail is read and the log level (admin)
-//   POST /api/settings/reload   read config.yml again, after editing it by hand (admin)
+//   PUT  /api/settings          change how often mail is read and the log level
+//   POST /api/settings/reload   read config.yml again, after editing it by hand
+//
+// These are the whole install's settings, but an install holds one household,
+// and everyone in it can change everything (owner, 2026-11-01). If an install
+// ever holds more households, changing these must narrow to whoever runs it.
 //
 // A change is written into config.yml (keeping its comments) and applied at
 // once. A file with a mistake is refused with the reasons, and the settings in
@@ -18,7 +22,6 @@ import type { SettingsResponse } from "../shared/api.js";
 import { LOG_LEVELS, MAX_CAPTURE_MINUTES, MIN_CAPTURE_MINUTES } from "../shared/settings.js";
 import { apiError, jsonBody, MESSAGES, type AppEnv } from "./http.js";
 
-const ADMIN_ONLY = "Only an admin can change these settings.";
 
 /** The settings in use, and how to read them again or change them. */
 export class InstallSettings {
@@ -121,7 +124,8 @@ export function settingsResponse(c: Context<AppEnv>, deps: SettingsDeps): Settin
     docker: config.docker
       ? { network: config.docker.network ?? null, port: config.docker.port ?? null, bind: config.docker.bind ?? null }
       : null,
-    canEdit: c.var.user?.isAdmin === true,
+    // Everyone signed in (an install holds one household); kept so the page can still show a read-only view if that ever changes.
+    canEdit: true,
     needsRestart,
     ignoredMailboxes: deps.ignoredMailboxes(),
     secretKey: deps.secretKey,
@@ -130,12 +134,10 @@ export function settingsResponse(c: Context<AppEnv>, deps: SettingsDeps): Settin
 
 export function settingsRoutes(deps: SettingsDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
-  const isAdmin = (c: Context<AppEnv>) => c.var.user?.isAdmin === true;
 
   app.get("/settings", (c) => c.json(settingsResponse(c, deps)));
 
   app.put("/settings", jsonBody(settingsSchema), (c) => {
-    if (!isAdmin(c)) return apiError(c, 403, ADMIN_ONLY);
     const { logLevel, captureEveryMinutes } = c.req.valid("json");
     const problems = deps.settings.update({ logLevel, captureEveryMinutes });
     if (problems) return apiError(c, 409, problems.join(" "));
@@ -143,7 +145,6 @@ export function settingsRoutes(deps: SettingsDeps): Hono<AppEnv> {
   });
 
   app.post("/settings/reload", (c) => {
-    if (!isAdmin(c)) return apiError(c, 403, ADMIN_ONLY);
     const problems = deps.settings.reload();
     if (problems) return apiError(c, 409, `config.yml has a problem, so the settings in use were kept: ${problems.join(" ")}`);
     return c.json(settingsResponse(c, deps));

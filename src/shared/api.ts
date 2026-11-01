@@ -18,15 +18,20 @@
 //   GET    /api/captures/:mailbox/:uidValidity/:uid/invoice              the invoice its link gave (PDF), as a download
 //   GET    /api/status                       StatusResponse
 //   PUT    /api/account/password             PasswordChangeRequest -> 204 (signs out your other sessions)
+//   GET    /api/users                        UserListResponse
+//   POST   /api/users                        UserInput -> HouseholdUser (201; admin)
+//   PUT    /api/users/:id                    UserUpdate -> HouseholdUser (admin)
+//   PUT    /api/users/:id/password           UserPasswordRequest -> 204 (admin; someone else's; signs them out)
+//   DELETE /api/users/:id                    -> 204 (admin; someone else; signs them out)
 //   GET    /api/settings                     SettingsResponse
-//   PUT    /api/settings                     SettingsInput -> SettingsResponse (admin; written to config.yml)
-//   POST   /api/settings/reload              -> SettingsResponse (admin; reads config.yml again)
+//   PUT    /api/settings                     SettingsInput -> SettingsResponse (written to config.yml)
+//   POST   /api/settings/reload              -> SettingsResponse (reads config.yml again)
 //   GET    /api/mailboxes                    MailboxListResponse
-//   POST   /api/mailboxes                    MailboxInput -> MailboxInfo (201; admin)
-//   PUT    /api/mailboxes/:id                MailboxInput -> MailboxInfo (admin)
-//   DELETE /api/mailboxes/:id                -> 204 (admin; its captured mail stays on disk, to restore)
-//   POST   /api/mailboxes/:id/restore        MailboxInput -> MailboxInfo (admin; a removed one, with its mail)
-//   POST   /api/mailboxes/test               MailboxTestRequest -> MailboxTestResponse (admin)
+//   POST   /api/mailboxes                    MailboxInput -> MailboxInfo (201)
+//   PUT    /api/mailboxes/:id                MailboxInput -> MailboxInfo
+//   DELETE /api/mailboxes/:id                -> 204 (its captured mail stays on disk, to restore)
+//   POST   /api/mailboxes/:id/restore        MailboxInput -> MailboxInfo (a removed one, with its mail)
+//   POST   /api/mailboxes/test               MailboxTestRequest -> MailboxTestResponse
 //   POST   /api/mailboxes/check              -> CheckingState (reads every mailbox now)
 //   GET    /api/billers                      BillerListResponse
 //   POST   /api/billers                      BillerInput -> Biller (201)
@@ -44,8 +49,11 @@
 //   PUT    /api/captures/review              CaptureReviewRequest -> CaptureReviewResponse (marks emails checked or not a bill, or clears that)
 //
 // :mailbox is the mailbox's slug (CaptureListItem.mailboxSlug). :field is one
-// of FIELDS (shared/extraction.ts). Billers and their rules, tags and reviews
-// belong to the signed-in person's household.
+// of FIELDS (shared/extraction.ts). Billers and their rules, tags, reviews,
+// mailboxes and people belong to the signed-in person's household. Every
+// person can do everything, the household's money being a shared effort
+// (owner, 2026-11-01); only adding, changing and removing people is for an
+// admin ("admin" above).
 
 import type { BillerKind } from "./billers.js";
 import type { Capture, CapturedAddress } from "./capture.js";
@@ -68,7 +76,11 @@ export interface SessionUser {
   id: number;
   email: string;
   name: string;
-  /** Can manage the whole install (the first account is one). */
+  /**
+   * Can add, change and remove the household's people (the first account is
+   * one). Everything else every person can do: the household manages its
+   * money together (owner, 2026-11-01).
+   */
   isAdmin: boolean;
   household: { id: number; name: string };
 }
@@ -338,7 +350,11 @@ export interface StatusResponse {
     /** The latest tries, newest first. */
     recent: InvoiceActivity[];
   };
-  /** Recent warnings and errors since the start, newest first. Admins only (they can name any household's mailbox); null for others. */
+  /**
+   * Recent warnings and errors since the start, newest first, for everyone:
+   * an install holds one household. They can name any household's mailbox,
+   * so this must narrow if an install ever holds more. Null is kept for that.
+   */
   problems: StatusProblem[] | null;
   canEdit: boolean;
 }
@@ -347,6 +363,45 @@ export interface StatusResponse {
 export interface PasswordChangeRequest {
   currentPassword: string;
   newPassword: string;
+}
+
+/** A person in the household, as the Users list shows them. Never their password. */
+export interface HouseholdUser {
+  id: number;
+  name: string;
+  email: string;
+  /** Can add, change and remove people. */
+  isAdmin: boolean;
+  createdAt: string;
+  /** True for the person asking. */
+  you: boolean;
+}
+
+export interface UserListResponse {
+  /** By name. */
+  users: HouseholdUser[];
+  /** True when the person asking may add, change and remove people. */
+  canManage: boolean;
+}
+
+/** Adding a person: they sign in with this email and password, and can change the password themselves. */
+export interface UserInput {
+  name: string;
+  email: string;
+  /** At least MIN_PASSWORD_LENGTH characters. */
+  password: string;
+  isAdmin: boolean;
+}
+
+export interface UserUpdate {
+  name: string;
+  email: string;
+  isAdmin: boolean;
+}
+
+/** A new password for someone else (one who forgot theirs). Signs them out everywhere. */
+export interface UserPasswordRequest {
+  password: string;
 }
 
 export interface Biller {

@@ -1,7 +1,7 @@
 // GET /api/status: whether OurHomeInbox is working, for the Status page.
 // When mail is read, how each of the household's mailboxes last went, what
-// its emails' invoice links gave, and (for admins) the recent warnings and
-// errors from the log. A mail reader that fails quietly is worse than none.
+// its emails' invoice links gave, and the recent warnings and errors from the
+// log. A mail reader that fails quietly is worse than none.
 
 import { Hono, type Context } from "hono";
 import { recentProblems } from "../log.js";
@@ -51,15 +51,15 @@ export function statusRoutes(deps: StatusDeps): Hono<AppEnv> {
     }
     tried.sort((a, b) => (a.triedAt < b.triedAt ? 1 : a.triedAt > b.triedAt ? -1 : a.captureId < b.captureId ? -1 : 1));
 
-    const isAdmin = c.var.user?.isAdmin === true;
     const body: StatusResponse = {
       version: deps.version,
       startedAt: deps.startedAt.toISOString(),
       checking: deps.checking.state(),
       mailboxes: deps.mailboxes.list(householdId),
       invoices: { counts, retrying, recent: tried.slice(0, RECENT_INVOICES) },
-      problems: isAdmin ? recentProblems() : null,
-      canEdit: isAdmin,
+      // For everyone: an install holds one household (see StatusResponse.problems).
+      problems: recentProblems(),
+      canEdit: true,
     };
     return c.json(body);
   });

@@ -674,11 +674,13 @@ export function CaptureListPage() {
                 className="px-3 py-1"
                 aria-expanded={moreOpen}
                 aria-controls={moreOpen ? moreId : undefined}
+                // Named in full; spaces inside the badge's spans are dropped from the name ("Filters2on").
+                aria-label={moreOn > 0 ? `Filters, ${moreOn} on` : "Filters"}
                 onClick={() => setMoreOpen(!moreOpen)}
               >
                 <SlidersHorizontal aria-hidden className="size-4" />
                 Filters
-                {moreOn > 0 ? <span className="rounded-full bg-accent px-1.5 text-xs text-on-accent">{moreOn}<span className="sr-only"> on</span></span> : null}
+                {moreOn > 0 ? <span aria-hidden className="rounded-full bg-accent px-1.5 text-xs text-on-accent">{moreOn}</span> : null}
               </Button>
             </div>
           </div>

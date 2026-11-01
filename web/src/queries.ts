@@ -19,6 +19,7 @@ export const queryKeys = {
   biller: (id: number) => ["billers", id] as const,
   billerRules: (id: number) => ["billers", id, "rules"] as const,
   tags: ["tags"] as const,
+  users: ["users"] as const,
 };
 
 /** Every biller's rules list, whichever biller. */
@@ -125,6 +126,16 @@ export function useBillerRules(id: number) {
 
 export function useTags() {
   return useQuery({ queryKey: queryKeys.tags, queryFn: ({ signal }) => api.listTags(signal) });
+}
+
+export function useUsers() {
+  return useQuery({ queryKey: queryKeys.users, queryFn: ({ signal }) => api.listUsers(signal) });
+}
+
+/** After a person is added, changed or removed: the list, and who is signed in (your own name or admin may have changed). */
+export function refreshAfterUserChange(client: QueryClient): void {
+  void client.invalidateQueries({ queryKey: queryKeys.users });
+  void client.invalidateQueries({ queryKey: queryKeys.session });
 }
 
 /** After tags are added, renamed or deleted, or emails tagged: the tags (and their counts) and every email's tags. */

@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 // The Status page against a stand-in server: all well, something that needs
-// someone, invoice links, and the problems only an admin sees.
+// someone, invoice links, the counts' links, and the read-only view kept for
+// when the server says canEdit is false.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CaptureListResponse, MailboxInfo, StatusResponse } from "../../../src/shared/api";
+import { exportItem } from "../mail/exportFixtures";
 import { StatusPage } from "./StatusPage";
 
 afterEach(() => {
@@ -56,8 +58,7 @@ function statusWith(change: Partial<StatusResponse> = {}): StatusResponse {
   };
 }
 
-function show(status: StatusResponse) {
-  const captures: CaptureListResponse = { captures: [] };
+function show(status: StatusResponse, captures: CaptureListResponse = { captures: [] }) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string) => {
@@ -99,6 +100,14 @@ describe("the Status page", () => {
     expect(alert.closest("div")!.textContent).toContain("refused the connection");
     expect(screen.getByText("Needs you")).toBeTruthy();
     expect(screen.getByText(/^Failing since/)).toBeTruthy();
+  });
+
+  it("links each email count to the list narrowed that way, named in full for screen readers", async () => {
+    show(statusWith(), { captures: [exportItem("1"), exportItem("2", { review: { state: "checked", by: "Sam", at: "2026-10-30T12:00:00Z" } })] });
+    // Once ran together as "Showto review": a space inside a hidden span is dropped from the name.
+    const link = await screen.findByRole("link", { name: "Show to review" });
+    expect(link.getAttribute("href")).toBe("/?review=todo");
+    expect(link.textContent).toBe("Show");
   });
 
   it("shows a member no log problems and no settings links", async () => {
