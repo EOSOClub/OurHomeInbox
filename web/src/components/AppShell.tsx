@@ -18,7 +18,7 @@ function NavItem({ to, active, icon, children }: { to: string; active: boolean; 
       to={to}
       aria-current={active ? "page" : undefined}
       className={
-        "-mb-px inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium " +
+        "inline-flex shrink-0 items-center gap-2 border-b-2 px-2 py-2 text-sm font-medium sm:px-3 " +
         (active ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink")
       }
     >
@@ -71,7 +71,12 @@ export function AppShell({ user, children }: { user: SessionUser; children: Reac
               </Button>
             </div>
           </div>
-          <nav aria-label="Main" className="flex gap-1 overflow-x-auto">
+          {/* The nav, not each tab, overlaps the header's bottom line by 1px, so
+              the active tab's underline covers it without the tabs poking out
+              of the nav (which made it scroll up and down by 1px). Tighter on a
+              phone, so all five fit across down to 320px; it still scrolls
+              sideways rather than spill on anything narrower. */}
+          <nav aria-label="Main" className="-mb-px flex overflow-x-auto sm:gap-1">
             <NavItem to="/" active={onMail} icon={<Mail aria-hidden className="size-4" />}>
               {/* Shorter on a phone, so all five fit across. */}
               <span className="sm:hidden">Mail</span>

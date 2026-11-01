@@ -1,15 +1,17 @@
 // The page for one captured email: reads the email's address from the page
 // URL, fetches it, and shows it with CaptureDetailView, with its tags to add
-// and take off (CaptureTagEditor). Under the details:
+// and take off (CaptureTagEditor). "Back to captured mail" returns to the
+// list with the search and filters it was opened from. Under the details:
 // its biller, or, when no biller matches, buttons to start a biller from the
 // sender or add the sender to one the household already has.
 
 import { ArrowLeft, Plus, ReceiptText } from "lucide-react";
 import { useId, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 import type { CaptureDetailResponse } from "../../../src/shared/api";
 import { addSenderPathFrom, newBillerPathFrom } from "../billers";
 import { Button, buttonClasses, ErrorState, LoadingState } from "../components/ui";
+import { listPathFrom } from "../mail/captureList";
 import { CaptureDetailView } from "../mail/CaptureDetailView";
 import { CaptureTagEditor } from "../mail/CaptureTagEditor";
 import { useBillers, useCapture } from "../queries";
@@ -76,10 +78,11 @@ function BillerActions({ detail }: { detail: CaptureDetailResponse }) {
 export function CaptureDetailPage() {
   const { mailbox = "", uidValidity = "", uid = "" } = useParams();
   const capture = useCapture(`${mailbox}/${uidValidity}/${uid}`);
+  const listPath = listPathFrom(useLocation().state);
 
   return (
     <div>
-      <Link to="/" className="mb-4 inline-flex items-center gap-1 text-sm font-medium text-accent hover:underline">
+      <Link to={listPath} className="mb-4 inline-flex items-center gap-1 text-sm font-medium text-accent hover:underline">
         <ArrowLeft aria-hidden className="size-4" />
         Back to captured mail
       </Link>

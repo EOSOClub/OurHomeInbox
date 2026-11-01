@@ -1,20 +1,36 @@
 // The list of captured mail, newest first, with each email's biller, its tags
 // and what the reader picked out of it, a search box, buttons to show only
-// emails with or without a biller, and a choice of tag (all in the browser;
-// the tag is in the page address, so a link can open the list on one tag).
-// Each row opens that email. Select turns the rows into checkboxes, to add a
-// tag to several emails at once or take one off.
+// emails with or without a biller, a choice of tag, and behind "Filters" the
+// kind of email, a range of days and ticks for "Needs a check", "Past due"
+// and "Sender not verified" (all in the browser; the search and every filter
+// are in the page address, so Back from an email or a link opens the list the
+// same way). Each row opens that email. Select turns the rows into
+// checkboxes, to add a tag to several emails at once or take one off.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckSquare, Inbox, Link2, Paperclip, ReceiptText, Search, Tags } from "lucide-react";
+import { CheckSquare, Inbox, Link2, Paperclip, ReceiptText, Search, SlidersHorizontal, Tags } from "lucide-react";
 import { useId, useMemo, useState, type ReactNode } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Link, useLocation, useSearchParams } from "react-router";
 import type { CaptureListItem, CaptureListResponse, CaptureTagsRequest, Tag, TagRef } from "../../../src/shared/api";
+import { EMAIL_KINDS } from "../../../src/shared/extraction";
 import { MAX_TAGGED_AT_ONCE } from "../../../src/shared/tags";
 import { api, capturePagePath } from "../api";
 import { Button, ErrorState, LoadingState, Notice, PageTitle } from "../components/ui";
 import { formatDateTime, formatListDate, plural, senderDisplay, subjectDisplay } from "../format";
-import { captureDate, filterCaptures, tagFilterFrom, type BillerFilter, type TagFilter } from "../mail/captureList";
+import {
+  captureDate,
+  filterCaptures,
+  filtersFrom,
+  isNarrowed,
+  moreFiltersOn,
+  withFilters,
+  withoutFilters,
+  type BillerFilter,
+  type CaptureFilters,
+  type FromList,
+  type KindFilter,
+  type TagFilter,
+} from "../mail/captureList";
 import { KIND_LABELS, summaryLine } from "../mail/picked";
 import { TagAdder, TagChips } from "../mail/Tags";
 import { queryKeys, refreshAfterTagChange, useCaptures, useMailboxes, useTags } from "../queries";
@@ -80,10 +96,11 @@ function RowContent({ item }: { item: CaptureListItem }) {
   );
 }
 
-function CaptureRow({ item }: { item: CaptureListItem }) {
+/** A row that opens the email; `fromList` lets its "Back to captured mail" return to the list with the same search and filters. */
+function CaptureRow({ item, fromList }: { item: CaptureListItem; fromList: FromList }) {
   return (
     <li>
-      <Link to={capturePagePath(item.id)} className="block rounded-lg border border-line bg-surface p-3 hover:bg-surface-muted sm:px-4">
+      <Link to={capturePagePath(item.id)} state={fromList} className="block rounded-lg border border-line bg-surface p-3 hover:bg-surface-muted sm:px-4">
         <RowContent item={item} />
       </Link>
     </li>
@@ -325,34 +342,126 @@ function BillerFilterButtons({ value, onChange }: { value: BillerFilter; onChang
   );
 }
 
+/** Marks the page address changes the list makes itself, as against a link or the menu. */
+const LIST_FILTERS = "captureListFilters";
+
+/** A tick that narrows the list, such as "Past due". */
+function FilterTick({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="size-4 accent-accent" />
+      {label}
+    </label>
+  );
+}
+
+/** The filters behind the Filters button: the kind of email, a range of days, and the ticks. */
+function MoreFilters({ id, filters, onChange }: { id: string; filters: CaptureFilters; onChange: (changes: Partial<CaptureFilters>) => void }) {
+  const kindId = useId();
+  const fromId = useId();
+  const toId = useId();
+  const backwards = filters.from !== "" && filters.to !== "" && filters.from > filters.to;
+  const field = "rounded-md border border-line bg-surface px-2 py-1 text-sm text-ink";
+  return (
+    <section id={id} aria-label="More filters" className="mb-3 flex flex-col gap-3 rounded-lg border border-line bg-surface p-3 sm:px-4">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div className="flex items-center gap-2">
+          <label htmlFor={kindId} className="w-10 text-sm text-muted sm:w-auto">
+            Kind
+          </label>
+          <select id={kindId} value={filters.kind} onChange={(e) => onChange({ kind: e.target.value as KindFilter })} className={field}>
+            <option value="all">Any</option>
+            {EMAIL_KINDS.map((kind) => (
+              <option key={kind} value={kind}>
+                {KIND_LABELS[kind]}
+              </option>
+            ))}
+          </select>
+        </div>
+        {/* Each label stays with its box when the row wraps on a phone. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          <div className="flex items-center gap-2">
+            <label htmlFor={fromId} className="w-10 text-sm text-muted sm:w-auto">
+              From
+            </label>
+            <input id={fromId} type="date" value={filters.from} onChange={(e) => onChange({ from: e.target.value })} className={field} />
+          </div>
+          <div className="flex items-center gap-2">
+            <label htmlFor={toId} className="w-10 text-sm text-muted sm:w-auto">
+              To
+            </label>
+            <input id={toId} type="date" value={filters.to} onChange={(e) => onChange({ to: e.target.value })} className={field} />
+          </div>
+        </div>
+      </div>
+      {backwards ? <p className="text-sm text-warn">The From day is after the To day, so nothing can match.</p> : null}
+      <div className="flex flex-wrap gap-x-6 gap-y-2">
+        <FilterTick label="Needs a check" checked={filters.needsCheck} onChange={(needsCheck) => onChange({ needsCheck })} />
+        <FilterTick label="Past due" checked={filters.pastDue} onChange={(pastDue) => onChange({ pastDue })} />
+        <FilterTick label="Sender not verified" checked={filters.unverified} onChange={(unverified) => onChange({ unverified })} />
+      </div>
+    </section>
+  );
+}
+
 export function CaptureListPage() {
   const captures = useCaptures();
   const tags = useTags().data?.tags;
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [query, setQuery] = useState("");
-  const [billerFilter, setBillerFilter] = useState<BillerFilter>("all");
+  // The search and filters, as a page address. Kept here and copied to the
+  // address, because the router applies address changes in the background:
+  // typing and ticks driven straight from the address would lag and drop keys.
+  const [listSearch, setListSearch] = useState(() => searchParams.toString());
+  // A new address from elsewhere (the menu, a link) replaces them; the page's
+  // own copies are marked. Done while rendering, so the old ones never flash.
+  const [seenKey, setSeenKey] = useState(location.key);
+  if (location.key !== seenKey) {
+    setSeenKey(location.key);
+    if ((location.state as { by?: unknown } | null)?.by !== LIST_FILTERS) setListSearch(searchParams.toString());
+  }
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const searchId = useId();
+  const moreId = useId();
   const all = captures.data?.captures;
-  const tagFilter = tagFilterFrom(
-    searchParams.get("tag"),
+  const filters = filtersFrom(
+    new URLSearchParams(listSearch),
     tags?.map((tag) => tag.id),
   );
-  const shown = useMemo(() => (all ? filterCaptures(all, query, billerFilter, tagFilter) : []), [all, query, billerFilter, tagFilter]);
-  const narrowed = query.trim() !== "" || billerFilter !== "all" || tagFilter !== "all";
+  const fromList: FromList = { listSearch: listSearch ? `?${listSearch}` : "" };
+  const { query, billers: billerFilter, tag: tagFilter, kind, from, to, needsCheck, pastDue, unverified } = filters;
+  const moreOn = moreFiltersOn(filters);
+  // Open at first when the address already asks for one of its filters.
+  const [moreOpen, setMoreOpen] = useState(moreOn > 0);
+  // By value: filters is a new object on every render.
+  const shown = useMemo(
+    () => (all ? filterCaptures(all, { query, billers: billerFilter, tag: tagFilter, kind, from, to, needsCheck, pastDue, unverified }) : []),
+    [all, query, billerFilter, tagFilter, kind, from, to, needsCheck, pastDue, unverified],
+  );
+  const narrowed = isNarrowed(filters);
   const filteredTag = typeof tagFilter === "number" ? tags?.find((tag) => tag.id === tagFilter) : undefined;
 
+  // Replaced, not pushed: Back leaves the list instead of undoing each keystroke or tick.
+  function changeList(next: URLSearchParams) {
+    setListSearch(next.toString());
+    setSearchParams(next, { replace: true, state: { by: LIST_FILTERS } });
+  }
+
+  function setFilters(changes: Partial<CaptureFilters>) {
+    changeList(withFilters(new URLSearchParams(listSearch), changes));
+  }
+
+  function clearFilters() {
+    changeList(withoutFilters(new URLSearchParams(listSearch)));
+  }
+
   function setTagFilter(value: string) {
-    setSearchParams(
-      (params) => {
-        const next = new URLSearchParams(params);
-        if (value === "all") next.delete("tag");
-        else next.set("tag", value);
-        return next;
-      },
-      { replace: true },
-    );
+    setFilters({ tag: value === "all" || value === "none" ? value : Number(value) });
+  }
+
+  function setBillerFilter(value: BillerFilter) {
+    setFilters({ billers: value });
   }
 
   function toggle(id: string) {
@@ -363,7 +472,8 @@ export function CaptureListPage() {
   }
 
   function emptyMessage(): string {
-    if (query.trim()) return `No captured mail matches "${query.trim()}"${billerFilter === "all" && tagFilter === "all" ? "" : " here"}.`;
+    if (query.trim()) return `No captured mail matches "${query.trim()}"${billerFilter === "all" && tagFilter === "all" && moreOn === 0 ? "" : " here"}.`;
+    if (moreOn > 0) return "No captured email matches these filters.";
     if (tagFilter === "none") return billerFilter === "all" ? "Every captured email has a tag." : "No email here is without a tag.";
     if (filteredTag) return billerFilter === "all" ? `No captured email has the tag ${filteredTag.name}.` : `No email here has the tag ${filteredTag.name}.`;
     return billerFilter === "matched" ? "No captured email has a biller yet." : "Every captured email has a biller.";
@@ -386,20 +496,39 @@ export function CaptureListPage() {
               id={searchId}
               type="search"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search subject, sender, biller or mailbox"
+              onChange={(e) => setFilters({ query: e.target.value })}
+              placeholder="Search subject, sender, biller or tag"
               className="w-full rounded-md border border-line bg-surface py-2 pr-3 pl-9 text-base placeholder:text-muted"
             />
           </div>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <p role="status" className="text-sm text-muted">
-              {narrowed ? `Showing ${shown.length} of ${plural(all.length, "email", "emails")}` : plural(all.length, "email", "emails")}
-            </p>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <p role="status" className="text-sm text-muted">
+                {narrowed ? `Showing ${shown.length} of ${plural(all.length, "email", "emails")}` : plural(all.length, "email", "emails")}
+              </p>
+              {narrowed ? (
+                <button type="button" onClick={clearFilters} className="text-sm font-medium text-accent hover:underline">
+                  Clear filters
+                </button>
+              ) : null}
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               {(tags && tags.length > 0) || tagFilter !== "all" ? <TagFilterSelect tags={tags ?? []} value={tagFilter} onChange={setTagFilter} /> : null}
               <BillerFilterButtons value={billerFilter} onChange={setBillerFilter} />
+              <Button
+                variant={moreOn > 0 ? "secondary" : "quiet"}
+                className="px-3 py-1"
+                aria-expanded={moreOpen}
+                aria-controls={moreOpen ? moreId : undefined}
+                onClick={() => setMoreOpen(!moreOpen)}
+              >
+                <SlidersHorizontal aria-hidden className="size-4" />
+                Filters
+                {moreOn > 0 ? <span className="rounded-full bg-accent px-1.5 text-xs text-on-accent">{moreOn}<span className="sr-only"> on</span></span> : null}
+              </Button>
             </div>
           </div>
+          {moreOpen ? <MoreFilters id={moreId} filters={filters} onChange={setFilters} /> : null}
           <div className="mb-3 flex flex-wrap items-center gap-2">
             {selecting ? null : (
               <Button variant="secondary" className="px-3 py-1" onClick={() => setSelecting(true)}>
@@ -433,7 +562,7 @@ export function CaptureListPage() {
                 selecting ? (
                   <SelectableRow key={item.id} item={item} selected={selected.has(item.id)} onToggle={() => toggle(item.id)} />
                 ) : (
-                  <CaptureRow key={item.id} item={item} />
+                  <CaptureRow key={item.id} item={item} fromList={fromList} />
                 ),
               )}
             </ul>
