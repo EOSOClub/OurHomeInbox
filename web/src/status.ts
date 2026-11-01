@@ -6,6 +6,7 @@
 import type { CaptureListItem, CheckingState, MailboxInfo } from "../../src/shared/api";
 import type { InvoiceOutcome } from "../../src/shared/invoice";
 import { formatDateTime } from "./format";
+import { needsCheckNow } from "./mail/review";
 
 /** Why a mailbox needs someone, or null when it does not. */
 export function mailboxProblem(mailbox: MailboxInfo): string | null {
@@ -52,6 +53,10 @@ export function mailboxState(mailbox: MailboxInfo): { label: string; tone: "ok" 
 export interface EmailCounts {
   total: number;
   bills: number;
+  /** Nobody has marked them checked or not a bill yet. */
+  toReview: number;
+  notBill: number;
+  /** More than one candidate for a value, and not reviewed yet. */
   needsCheck: number;
   pastDue: number;
   senderNotVerified: number;
@@ -62,7 +67,9 @@ export function emailCounts(captures: readonly CaptureListItem[]): EmailCounts {
   return {
     total: captures.length,
     bills: captures.filter((c) => c.picked.kind === "bill").length,
-    needsCheck: captures.filter((c) => c.picked.needsCheck).length,
+    toReview: captures.filter((c) => c.review === null).length,
+    notBill: captures.filter((c) => c.review?.state === "not-bill").length,
+    needsCheck: captures.filter(needsCheckNow).length,
     pastDue: captures.filter((c) => c.picked.dueNow).length,
     senderNotVerified: captures.filter((c) => !c.senderVerified).length,
     noBiller: captures.filter((c) => c.biller === null).length,

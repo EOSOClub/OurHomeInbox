@@ -1,5 +1,5 @@
 // The server's own database: households, accounts, sign-in sessions and each
-// household's mailboxes, billers and their rules, and tags, in one SQLite file next to the captured mail. Captured
+// household's mailboxes, billers and their rules, tags and reviews, in one SQLite file next to the captured mail. Captured
 // mail itself stays as files (see store.ts).
 //
 // The schema changes through MIGRATIONS only, in order, never edited once
@@ -149,6 +149,18 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (tag_id, capture_id)
   );
   CREATE INDEX capture_tags_capture ON capture_tags(household_id, capture_id);
+  `,
+  // Review (see reviews.ts): a person marked the email checked or not a bill.
+  // No row means it still needs a look. Named by capture id, as tags are.
+  `
+  CREATE TABLE capture_reviews (
+    household_id integer NOT NULL REFERENCES households(id),
+    capture_id text NOT NULL,
+    state text NOT NULL CHECK (state IN ('checked', 'not-bill')),
+    reviewed_by integer REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at text NOT NULL,
+    PRIMARY KEY (household_id, capture_id)
+  );
   `,
 ];
 

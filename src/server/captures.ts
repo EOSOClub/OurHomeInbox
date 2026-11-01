@@ -7,7 +7,7 @@
 //   GET /api/captures/:mailbox/:uidValidity/:uid/invoice              the invoice its link gave, as a download
 //
 // Each email carries the household's biller for its sender (see matching.ts),
-// its tags (see tags.ts), whether the mail provider confirmed that sender (see sender.ts), and what
+// its tags (see tags.ts), a person's review mark (see reviews.ts), whether the mail provider confirmed that sender (see sender.ts), and what
 // the reader picked out of it with that biller's rules (see
 // extraction.ts and rules.ts), worked out on every request so a change to a
 // biller or a rule shows at once.
@@ -20,7 +20,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Hono, type Context } from "hono";
 import { log } from "../log.js";
-import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse, FieldChoicesResponse, TagRef } from "../shared/api.js";
+import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse, CaptureReview, FieldChoicesResponse, TagRef } from "../shared/api.js";
 import type { Capture } from "../shared/capture.js";
 import { FIELDS, type BillerRule, type ExtractionSummary, type FieldName } from "../shared/extraction.js";
 import type { InvoiceInfo, InvoiceRecord } from "../shared/invoice.js";
@@ -33,6 +33,7 @@ import { eachCapture, INVOICE_FILE, readCapture, readInvoiceRecord, UID, UID_VAL
 import type { MailboxPlace, Mailboxes } from "./mailboxes.js";
 import { BillerMatcher } from "./matching.js";
 import { billerEmails, householdRules } from "./rules.js";
+import { captureReviews, reviewOn } from "./reviews.js";
 import { checkSender } from "./sender.js";
 import { captureTags, tagsOn } from "./tags.js";
 
@@ -76,13 +77,14 @@ class SummaryCache {
   }
 }
 
-/** The household's mailboxes, billers and their rules, read once per request. Its tags are read when first asked for. */
+/** The household's mailboxes, billers and their rules, read once per request. Its tags and reviews are read when first asked for. */
 class HouseholdReader {
   readonly matcher: BillerMatcher;
   /** The household's mailboxes by slug: only their mail is shown. */
   readonly places: Map<string, MailboxPlace>;
   private readonly rules: Map<number, BillerRule[]>;
   private tags: Map<string, TagRef[]> | null = null;
+  private reviews: Map<string, CaptureReview> | null = null;
 
   constructor(
     private readonly db: Database,
@@ -101,6 +103,11 @@ class HouseholdReader {
   tagsOn(captureId: string): TagRef[] {
     this.tags ??= captureTags(this.db, this.householdId);
     return this.tags.get(captureId) ?? [];
+  }
+
+  reviewOn(captureId: string): CaptureReview | null {
+    this.reviews ??= captureReviews(this.db, this.householdId);
+    return this.reviews.get(captureId) ?? null;
   }
 }
 
@@ -126,6 +133,7 @@ function listItem(stored: StoredCapture, reader: HouseholdReader, summaries: Sum
     senderVerified: checkSender(capture).verified,
     picked: summaries.get(id, capture, reader.rulesFor(biller?.id), stored.invoice),
     tags: reader.tagsOn(id),
+    review: reader.reviewOn(id),
   };
 }
 
@@ -241,6 +249,7 @@ export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
       invoice: invoiceInfo(found.invoice),
       extraction: extract(found.capture, reader.rulesFor(biller?.id), found.invoice?.text ?? null),
       tags: tagsOn(deps.db, householdOf(c), id),
+      review: reviewOn(deps.db, householdOf(c), id),
     };
     return c.json(body);
   });

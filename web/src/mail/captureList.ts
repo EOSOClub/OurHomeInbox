@@ -2,18 +2,23 @@
 // appear in the subject, the sender's name or address, the mailbox name, the
 // matched biller's name, or one of the email's tags. The list can also be
 // narrowed to emails with a biller, or without one; to one tag, or to emails
-// with no tags; to one kind of email; to a range of days; and to the emails
-// that need a check, say they are past due, or come from a sender the mail
-// provider did not verify. All of it lives in the page address, so Back from
-// an email, or a link, opens the list the same way.
+// with no tags; to one kind of email; to a range of days; to the emails still
+// to review, or marked checked or not a bill; and to the emails that need a
+// check, say they are past due, or come from a sender the mail provider did
+// not verify. All of it lives in the page address, so Back from an email, or a
+// link, opens the list the same way.
 
 import type { CaptureListItem } from "../../../src/shared/api";
 import { EMAIL_KINDS, type EmailKind } from "../../../src/shared/extraction";
+import { REVIEW_STATES, type ReviewState } from "../../../src/shared/review";
+import { needsCheckNow } from "./review";
 
 export type BillerFilter = "all" | "matched" | "unmatched";
 /** Every email, emails with no tags, or emails with the tag of this id. */
 export type TagFilter = "all" | "none" | number;
 export type KindFilter = "all" | EmailKind;
+/** Every email, the ones nobody has marked yet ("todo"), or the ones marked this way. */
+export type ReviewFilter = "all" | "todo" | ReviewState;
 
 export interface CaptureFilters {
   query: string;
@@ -23,7 +28,8 @@ export interface CaptureFilters {
   /** The first and last day shown (the row's date, in this browser's time zone), "YYYY-MM-DD"; "" for no limit. */
   from: string;
   to: string;
-  /** Only emails with a value that has more than one candidate. */
+  review: ReviewFilter;
+  /** Only emails with a value that has more than one candidate, that nobody has reviewed yet. */
   needsCheck: boolean;
   /** Only emails that say the account is past due (due now). */
   pastDue: boolean;
@@ -38,6 +44,7 @@ export const NO_FILTERS: CaptureFilters = {
   kind: "all",
   from: "",
   to: "",
+  review: "all",
   needsCheck: false,
   pastDue: false,
   unverified: false,
@@ -58,7 +65,9 @@ export function filterCaptures(items: readonly CaptureListItem[], filters: Parti
     if (f.tag === "none" && item.tags.length > 0) return false;
     if (typeof f.tag === "number" && !item.tags.some((t) => t.id === f.tag)) return false;
     if (f.kind !== "all" && item.picked.kind !== f.kind) return false;
-    if (f.needsCheck && !item.picked.needsCheck) return false;
+    if (f.review === "todo" && item.review !== null) return false;
+    if (f.review !== "all" && f.review !== "todo" && item.review?.state !== f.review) return false;
+    if (f.needsCheck && !needsCheckNow(item)) return false;
     if (f.pastDue && !item.picked.dueNow) return false;
     if (f.unverified && item.senderVerified) return false;
     if (f.from || f.to) {
@@ -73,7 +82,7 @@ export function filterCaptures(items: readonly CaptureListItem[], filters: Parti
 
 /** How many of the filters behind the Filters button are on (the two dates count as one). */
 export function moreFiltersOn(f: CaptureFilters): number {
-  return [f.kind !== "all", f.from !== "" || f.to !== "", f.needsCheck, f.pastDue, f.unverified].filter(Boolean).length;
+  return [f.kind !== "all", f.from !== "" || f.to !== "", f.review !== "all", f.needsCheck, f.pastDue, f.unverified].filter(Boolean).length;
 }
 
 /** True when the search or any filter narrows the list. */
@@ -98,6 +107,7 @@ const PARAM = {
   kind: "kind",
   from: "from",
   to: "to",
+  review: "review",
   needsCheck: "check",
   pastDue: "pastdue",
   unverified: "unverified",
@@ -116,6 +126,7 @@ function dayFrom(param: string | null): string {
 export function filtersFrom(params: URLSearchParams, tagIds: readonly number[] | undefined): CaptureFilters {
   const billers = params.get(PARAM.billers);
   const kind = params.get(PARAM.kind);
+  const review = params.get(PARAM.review);
   return {
     query: params.get(PARAM.query) ?? "",
     billers: billers === "matched" || billers === "unmatched" ? billers : "all",
@@ -123,6 +134,7 @@ export function filtersFrom(params: URLSearchParams, tagIds: readonly number[] |
     kind: kind !== null && (EMAIL_KINDS as readonly string[]).includes(kind) ? (kind as EmailKind) : "all",
     from: dayFrom(params.get(PARAM.from)),
     to: dayFrom(params.get(PARAM.to)),
+    review: review === "todo" || (review !== null && (REVIEW_STATES as readonly string[]).includes(review)) ? (review as ReviewFilter) : "all",
     needsCheck: params.get(PARAM.needsCheck) === "1",
     pastDue: params.get(PARAM.pastDue) === "1",
     unverified: params.get(PARAM.unverified) === "1",
@@ -140,6 +152,12 @@ export function withFilters(params: URLSearchParams, changes: Partial<CaptureFil
     else next.set(PARAM[key], text);
   }
   return next;
+}
+
+/** The list's address narrowed by `changes` only, such as "/?review=todo"; "/" for the whole list. For links from other pages. */
+export function listPathWith(changes: Partial<CaptureFilters>): string {
+  const search = withFilters(new URLSearchParams(), changes).toString();
+  return search ? `/?${search}` : "/";
 }
 
 /** The page address with every filter and the search taken off. */

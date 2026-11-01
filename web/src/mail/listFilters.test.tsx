@@ -87,6 +87,7 @@ function stubServer() {
     senderVerified,
     picked,
     tags: [],
+    review: null,
   });
   const detail = (capture: Capture): CaptureDetailResponse => ({
     id: idOf(capture),
@@ -97,6 +98,7 @@ function stubServer() {
     invoice: null,
     extraction: extract(capture),
     tags: [],
+    review: null,
   });
   vi.stubGlobal(
     "fetch",

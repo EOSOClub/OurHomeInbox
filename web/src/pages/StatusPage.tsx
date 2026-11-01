@@ -1,6 +1,7 @@
 // Status: whether OurHomeInbox is working. What needs someone first, then
-// reading mail, each mailbox, the household's emails, what the invoice links
-// gave, and (for admins) the recent warnings and errors.
+// reading mail, each mailbox, the household's emails (each count with a link
+// to the list narrowed to them), what the invoice links gave, and (for
+// admins) the recent warnings and errors.
 
 import { CircleCheck, TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
@@ -11,6 +12,7 @@ import { capturePagePath } from "../api";
 import { CheckMailNow, useRefreshWhenReadFinishes } from "../components/CheckMail";
 import { buttonClasses, Card, DetailRow, ErrorState, LoadingState, Notice, PageTitle } from "../components/ui";
 import { formatDateTime, plural, subjectDisplay } from "../format";
+import { listPathWith, type CaptureFilters } from "../mail/captureList";
 import { checkingLine, lastCheckLine } from "../mailboxes";
 import { useCaptures, useStatus } from "../queries";
 import { attention, emailCounts, INVOICE_OUTCOME_LABELS, mailboxState } from "../status";
@@ -71,10 +73,16 @@ function MailboxStatus({ mailbox, canEdit }: { mailbox: MailboxInfo; canEdit: bo
   );
 }
 
-function Count({ label, value, children }: { label: string; value: number; children?: ReactNode }) {
+/** A count; with `list`, a link that opens the captured-mail list narrowed to those emails. */
+function Count({ label, value, list, children }: { label: string; value: number; list?: Partial<CaptureFilters>; children?: ReactNode }) {
   return (
     <DetailRow label={label}>
       <span className="font-medium">{value}</span>
+      {list && value > 0 ? (
+        <Link to={listPathWith(list)} className="ml-3 text-sm font-medium text-accent hover:underline">
+          Show<span className="sr-only"> {label.toLowerCase()}</span>
+        </Link>
+      ) : null}
       {children ? <span className="block text-sm text-muted">{children}</span> : null}
     </DetailRow>
   );
@@ -90,16 +98,22 @@ function EmailsCard() {
       {captures.isError ? <ErrorState error={captures.error} onRetry={() => void captures.refetch()} /> : null}
       {counts ? (
         <dl className="mt-2 divide-y divide-line">
-          <Count label="Captured" value={counts.total} />
-          <Count label="Bills" value={counts.bills} />
-          <Count label="Need a check" value={counts.needsCheck}>
-            The email gives more than one value for something, such as two due dates.
+          <Count label="Captured" value={counts.total} list={{}} />
+          <Count label="Bills" value={counts.bills} list={{ kind: "bill" }} />
+          <Count label="To review" value={counts.toReview} list={{ review: "todo" }}>
+            Nobody has marked them checked or not a bill yet.
           </Count>
-          <Count label="Past due" value={counts.pastDue} />
-          <Count label="Sender not verified" value={counts.senderNotVerified}>
+          <Count label="Not a bill" value={counts.notBill} list={{ review: "not-bill" }}>
+            Marked by someone in the household. They are never sent to OurHome.
+          </Count>
+          <Count label="Need a check" value={counts.needsCheck} list={{ needsCheck: true }}>
+            The email gives more than one value for something, such as two due dates, and nobody has reviewed it yet.
+          </Count>
+          <Count label="Past due" value={counts.pastDue} list={{ pastDue: true }} />
+          <Count label="Sender not verified" value={counts.senderNotVerified} list={{ unverified: true }}>
             Proton could not confirm who sent them. They are never sent on without a person's OK.
           </Count>
-          <Count label="No biller" value={counts.noBiller}>
+          <Count label="No biller" value={counts.noBiller} list={{ billers: "unmatched" }}>
             <Link to="/billers" className="font-medium text-accent hover:underline">
               Billers
             </Link>{" "}

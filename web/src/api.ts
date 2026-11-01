@@ -12,6 +12,8 @@ import type {
   BillerRulesResponse,
   CaptureDetailResponse,
   CaptureListResponse,
+  CaptureReviewRequest,
+  CaptureReviewResponse,
   CaptureTagsRequest,
   CaptureTagsResponse,
   CheckingState,
@@ -163,4 +165,5 @@ export const api = {
   renameTag: (id: number, body: TagInput) => request<Tag>("PUT", `/api/tags/${id}`, { body }),
   deleteTag: (id: number) => request<void>("DELETE", `/api/tags/${id}`),
   changeCaptureTags: (body: CaptureTagsRequest) => request<CaptureTagsResponse>("POST", "/api/captures/tags", { body }),
+  reviewCaptures: (body: CaptureReviewRequest) => request<CaptureReviewResponse>("PUT", "/api/captures/review", { body }),
 };

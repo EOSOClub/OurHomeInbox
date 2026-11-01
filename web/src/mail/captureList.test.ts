@@ -8,6 +8,7 @@ import {
   filtersFrom,
   isNarrowed,
   listPathFrom,
+  listPathWith,
   localDay,
   moreFiltersOn,
   NO_FILTERS,
@@ -45,6 +46,7 @@ function item(
     senderVerified: true,
     picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
     tags,
+    review: null,
     ...more,
   };
 }
@@ -149,6 +151,25 @@ describe("filterCaptures", () => {
     expect(filterCaptures(varied, { from: "2026-10-20", to: "2026-10-05" })).toEqual([]);
   });
 
+  it("narrows to the emails still to review, or marked one way", () => {
+    const marked = (state: "checked" | "not-bill") => ({ state, by: "Sam", at: "2026-10-30T12:00:00Z" });
+    const list = [
+      varied[0]!,
+      { ...varied[1]!, review: marked("checked") },
+      { ...varied[2]!, review: marked("not-bill") },
+    ];
+    expect(ids(filterCaptures(list, { review: "todo" }))).toEqual(["bill"]);
+    expect(ids(filterCaptures(list, { review: "checked" }))).toEqual(["late"]);
+    expect(ids(filterCaptures(list, { review: "not-bill" }))).toEqual(["check"]);
+    expect(filterCaptures(list, { review: "all" })).toHaveLength(3);
+  });
+
+  it("no longer counts a reviewed email as needing a check", () => {
+    const reviewed = { ...varied[2]!, review: { state: "checked" as const, by: null, at: "2026-10-30T12:00:00Z" } };
+    expect(filterCaptures([reviewed], { needsCheck: true })).toEqual([]);
+    expect(ids(filterCaptures([varied[2]!], { needsCheck: true }))).toEqual(["check"]);
+  });
+
   it("combines every filter with the search", () => {
     expect(ids(filterCaptures(varied, { query: "past", kind: "bill", from: "2026-10-01", pastDue: true }))).toEqual(["late"]);
     expect(filterCaptures(varied, { query: "receipt", kind: "bill" })).toEqual([]);
@@ -160,6 +181,7 @@ describe("moreFiltersOn and isNarrowed", () => {
     expect(moreFiltersOn(NO_FILTERS)).toBe(0);
     expect(moreFiltersOn({ ...NO_FILTERS, from: "2026-10-01", to: "2026-10-31" })).toBe(1);
     expect(moreFiltersOn({ ...NO_FILTERS, kind: "bill", to: "2026-10-31", needsCheck: true, pastDue: true, unverified: true })).toBe(5);
+    expect(moreFiltersOn({ ...NO_FILTERS, review: "todo" })).toBe(1);
     expect(moreFiltersOn({ ...NO_FILTERS, query: "water", billers: "matched", tag: 1 })).toBe(0);
   });
 
@@ -191,7 +213,7 @@ describe("tagFilterFrom", () => {
 
 describe("the filters in the page address", () => {
   it("reads every filter", () => {
-    const params = new URLSearchParams("q=water+bill&biller=matched&tag=2&kind=reminder&from=2026-10-01&to=2026-10-31&check=1&pastdue=1&unverified=1");
+    const params = new URLSearchParams("q=water+bill&biller=matched&tag=2&kind=reminder&from=2026-10-01&to=2026-10-31&review=todo&check=1&pastdue=1&unverified=1");
     expect(filtersFrom(params, [1, 2])).toEqual({
       query: "water bill",
       billers: "matched",
@@ -199,6 +221,7 @@ describe("the filters in the page address", () => {
       kind: "reminder",
       from: "2026-10-01",
       to: "2026-10-31",
+      review: "todo",
       needsCheck: true,
       pastDue: true,
       unverified: true,
@@ -207,8 +230,11 @@ describe("the filters in the page address", () => {
   });
 
   it("treats anything it gets wrong as no filter", () => {
-    const params = new URLSearchParams("biller=maybe&kind=invoice&from=2026-02-30&to=10/31/2026&check=yes&pastdue=true");
+    const params = new URLSearchParams("biller=maybe&kind=invoice&from=2026-02-30&to=10/31/2026&review=done&check=yes&pastdue=true");
     expect(filtersFrom(params, [1])).toEqual(NO_FILTERS);
+    expect(filtersFrom(new URLSearchParams("review=not-bill"), []).review).toBe("not-bill");
+    expect(filtersFrom(new URLSearchParams("review=checked"), []).review).toBe("checked");
+    expect(filtersFrom(new URLSearchParams("review=Checked"), []).review).toBe("all");
     expect(filtersFrom(new URLSearchParams("from=2028-02-29&to=2026-13-01"), []).from).toBe("2028-02-29");
     expect(filtersFrom(new URLSearchParams("to=2026-13-01"), []).to).toBe("");
   });
@@ -222,13 +248,31 @@ describe("the filters in the page address", () => {
   });
 
   it("round-trips through the address", () => {
-    const filters = { ...NO_FILTERS, query: "a b", billers: "unmatched" as const, tag: 1, kind: "receipt" as const, to: "2026-10-31", unverified: true };
+    const filters = {
+      ...NO_FILTERS,
+      query: "a b",
+      billers: "unmatched" as const,
+      tag: 1,
+      kind: "receipt" as const,
+      to: "2026-10-31",
+      review: "not-bill" as const,
+      unverified: true,
+    };
     expect(filtersFrom(withFilters(new URLSearchParams(), filters), [1])).toEqual(filters);
   });
 
   it("takes every filter off at once", () => {
-    const params = new URLSearchParams("q=x&biller=matched&tag=none&kind=bill&from=2026-10-01&to=2026-10-02&check=1&pastdue=1&unverified=1&other=keep");
+    const params = new URLSearchParams("q=x&biller=matched&tag=none&kind=bill&from=2026-10-01&to=2026-10-02&review=todo&check=1&pastdue=1&unverified=1&other=keep");
     expect(withoutFilters(params).toString()).toBe("other=keep");
+  });
+});
+
+describe("listPathWith", () => {
+  it("gives the list's address narrowed by the filters named, for links from other pages", () => {
+    expect(listPathWith({})).toBe("/");
+    expect(listPathWith({ review: "todo" })).toBe("/?review=todo");
+    expect(listPathWith({ billers: "unmatched" })).toBe("/?biller=unmatched");
+    expect(listPathWith({ needsCheck: true, kind: "bill" })).toBe("/?check=1&kind=bill");
   });
 });
 

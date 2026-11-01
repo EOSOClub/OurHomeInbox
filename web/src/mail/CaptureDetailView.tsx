@@ -1,4 +1,4 @@
-// One captured email: who sent it (and whether that was confirmed), its biller, its tags, when, and where it was found,
+// One captured email: who sent it (and whether that was confirmed), its biller, how it was reviewed, its tags, when, and where it was found,
 // what the reader picked out of it, then tabs for each part of what was captured
 // (and the invoice its link gave, when there is one). Takes the API's reply directly, so it
 // can be shown (and tested) without fetching anything.
@@ -13,6 +13,7 @@ import { Tabs, type TabItem } from "../components/Tabs";
 import { formatAddressList, formatDateTime, subjectDisplay } from "../format";
 import { AttachmentsPanel, EmailPanel, HeadersPanel, HtmlSourcePanel, InvoicePanel, LinksPanel, RawPanel, TextPanel } from "./CapturePanels";
 import { PickedOut } from "./PickedOut";
+import { ReviewSummary } from "./CaptureReview";
 import { TagChips } from "./Tags";
 
 function Addresses({ list }: { list: CapturedAddress[] }) {
@@ -35,8 +36,19 @@ function SenderLine({ check }: { check: SenderCheck }) {
 /**
  * `actions` go under the email's details, for the page to add buttons that need its router.
  * `tags` replaces the plain list of its tags, for the page to add the tag editor (which needs the server).
+ * `review` replaces the plain line saying how it was reviewed, for the page to add the buttons that mark it.
  */
-export function CaptureDetailView({ detail, actions, tags }: { detail: CaptureDetailResponse; actions?: ReactNode; tags?: ReactNode }) {
+export function CaptureDetailView({
+  detail,
+  actions,
+  tags,
+  review,
+}: {
+  detail: CaptureDetailResponse;
+  actions?: ReactNode;
+  tags?: ReactNode;
+  review?: ReactNode;
+}) {
   const { id, capture, extraction } = detail;
   const { invoice } = detail;
   const tabs: TabItem[] = [
@@ -76,6 +88,7 @@ export function CaptureDetailView({ detail, actions, tags }: { detail: CaptureDe
               <span className="text-muted">No biller matches this sender yet</span>
             )}
           </DetailRow>
+          <DetailRow label="Review">{review ?? <ReviewSummary review={detail.review} />}</DetailRow>
           <DetailRow label="Tags">
             {tags ?? (detail.tags.length ? <TagChips tags={detail.tags} /> : <span className="text-muted">None</span>)}
           </DetailRow>

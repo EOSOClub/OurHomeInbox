@@ -18,6 +18,7 @@ import { captureRoutes } from "./captures.js";
 import type { Database } from "./db.js";
 import { apiError, crossSiteCheck, MAX_BODY_BYTES, MESSAGES, securityHeaders, type AppEnv } from "./http.js";
 import { mailboxRoutes, type Mailboxes } from "./mailboxes.js";
+import { reviewRoutes } from "./reviews.js";
 import { ruleRoutes } from "./rules.js";
 import { loadSession, requireSignIn, sessionRoutes } from "./session.js";
 import { settingsRoutes, type InstallSettings } from "./settings.js";
@@ -83,6 +84,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route("/api", billerRoutes({ db: deps.db, now }));
   app.route("/api", ruleRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
   app.route("/api", tagRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
+  app.route("/api", reviewRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
   // Before the web app's catch-all, so an unknown API address is a JSON 404, never the app's page.
   app.all("/api", (c) => apiError(c, 404, MESSAGES.notFound));
   app.all("/api/*", (c) => apiError(c, 404, MESSAGES.notFound));

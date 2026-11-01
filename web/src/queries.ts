@@ -2,7 +2,7 @@
 // piece is fetched once, cached, and refreshed in the background.
 
 import { QueryClient, useQuery } from "@tanstack/react-query";
-import type { SessionResponse } from "../../src/shared/api";
+import type { CaptureDetailResponse, CaptureListResponse, CaptureReviewResponse, SessionResponse } from "../../src/shared/api";
 import type { FieldName } from "../../src/shared/extraction";
 import { api, ApiRequestError } from "./api";
 
@@ -130,5 +130,21 @@ export function useTags() {
 /** After tags are added, renamed or deleted, or emails tagged: the tags (and their counts) and every email's tags. */
 export function refreshAfterTagChange(client: QueryClient): void {
   void client.invalidateQueries({ queryKey: queryKeys.tags });
+  void client.invalidateQueries({ queryKey: queryKeys.captures });
+}
+
+/**
+ * After emails are marked (or a mark is cleared): shows the new marks at once
+ * in the list and on each email's page that is loaded, then refreshes every
+ * email from the server.
+ */
+export function showReviews(client: QueryClient, result: CaptureReviewResponse): void {
+  const now = new Map(result.captures.map((c) => [c.id, c.review]));
+  client.setQueryData<CaptureListResponse>(queryKeys.captures, (old) =>
+    old ? { captures: old.captures.map((item) => (now.has(item.id) ? { ...item, review: now.get(item.id)! } : item)) } : old,
+  );
+  for (const [id, review] of now) {
+    client.setQueryData<CaptureDetailResponse>(queryKeys.capture(id), (old) => (old ? { ...old, review } : old));
+  }
   void client.invalidateQueries({ queryKey: queryKeys.captures });
 }

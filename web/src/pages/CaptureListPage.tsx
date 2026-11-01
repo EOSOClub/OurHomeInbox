@@ -1,18 +1,21 @@
-// The list of captured mail, newest first, with each email's biller, its tags
-// and what the reader picked out of it, a search box, buttons to show only
-// emails with or without a biller, a choice of tag, and behind "Filters" the
-// kind of email, a range of days and ticks for "Needs a check", "Past due"
-// and "Sender not verified" (all in the browser; the search and every filter
-// are in the page address, so Back from an email or a link opens the list the
-// same way). Each row opens that email. Select turns the rows into
-// checkboxes, to add a tag to several emails at once or take one off.
+// The list of captured mail, newest first, with each email's biller, its tags,
+// how a person marked it and what the reader picked out of it, a search box,
+// buttons to show only emails with or without a biller, a choice of tag, a
+// shortcut to the emails still to review, and behind "Filters" the kind of
+// email, how it was reviewed, a range of days and ticks for "Needs a check",
+// "Past due" and "Sender not verified" (all in the browser; the search and
+// every filter are in the page address, so Back from an email or a link opens
+// the list the same way). Each row opens that email. Select turns the rows
+// into checkboxes, to mark several emails at once (checked, not a bill, or to
+// review) or to add a tag to them or take one off.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckSquare, Inbox, Link2, Paperclip, ReceiptText, Search, SlidersHorizontal, Tags } from "lucide-react";
+import { CheckSquare, CircleCheck, CircleSlash, Inbox, Link2, Paperclip, ReceiptText, Search, SlidersHorizontal, Tags } from "lucide-react";
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router";
-import type { CaptureListItem, CaptureListResponse, CaptureTagsRequest, Tag, TagRef } from "../../../src/shared/api";
+import type { CaptureListItem, CaptureListResponse, CaptureReviewRequest, CaptureTagsRequest, Tag, TagRef } from "../../../src/shared/api";
 import { EMAIL_KINDS } from "../../../src/shared/extraction";
+import { MAX_REVIEWED_AT_ONCE, REVIEW_STATES, type ReviewState } from "../../../src/shared/review";
 import { MAX_TAGGED_AT_ONCE } from "../../../src/shared/tags";
 import { api, capturePagePath } from "../api";
 import { Button, ErrorState, LoadingState, Notice, PageTitle } from "../components/ui";
@@ -29,11 +32,14 @@ import {
   type CaptureFilters,
   type FromList,
   type KindFilter,
+  type ReviewFilter,
   type TagFilter,
 } from "../mail/captureList";
 import { KIND_LABELS, summaryLine } from "../mail/picked";
+import { ReviewBadge } from "../mail/CaptureReview";
+import { needsCheckNow, REVIEW_LABELS } from "../mail/review";
 import { TagAdder, TagChips } from "../mail/Tags";
-import { queryKeys, refreshAfterTagChange, useCaptures, useMailboxes, useTags } from "../queries";
+import { queryKeys, refreshAfterTagChange, showReviews, useCaptures, useMailboxes, useTags } from "../queries";
 
 function Count({ icon, count, one, many }: { icon: ReactNode; count: number; one: string; many: string }) {
   return (
@@ -45,14 +51,19 @@ function Count({ icon, count, one, many }: { icon: ReactNode; count: number; one
   );
 }
 
-/** The email's kind and what the reader picked out, such as "Bill  $4.13, due Nov 4, 2026", and any doubt about it or its sender. */
-function PickedLine({ picked, senderVerified }: { picked: CaptureListItem["picked"]; senderVerified: boolean }) {
+/**
+ * The email's kind and what the reader picked out, such as "Bill  $4.13, due Nov 4, 2026", how a person
+ * marked it, and any doubt about it (gone once a person has reviewed it) or its sender.
+ */
+function PickedLine({ item }: { item: CaptureListItem }) {
+  const { picked, senderVerified, review } = item;
   const line = summaryLine(picked);
   return (
     <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
       <span className="rounded border border-line bg-surface-muted px-1.5 text-xs font-medium">{KIND_LABELS[picked.kind]}</span>
       {line ? <span className="font-medium">{line}</span> : <span className="text-muted">Nothing picked out</span>}
-      {picked.needsCheck ? <span className="font-medium text-warn">Needs a check</span> : null}
+      <ReviewBadge review={review} />
+      {needsCheckNow(item) ? <span className="font-medium text-warn">Needs a check</span> : null}
       {senderVerified ? null : <span className="font-medium text-warn">Sender not verified</span>}
     </p>
   );
@@ -70,7 +81,7 @@ function RowContent({ item }: { item: CaptureListItem }) {
         </time>
       </div>
       <p className="mt-0.5 truncate">{subjectDisplay(item.subject)}</p>
-      <PickedLine picked={item.picked} senderVerified={item.senderVerified} />
+      <PickedLine item={item} />
       <TagChips tags={item.tags} className="mt-2" />
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
         {item.biller ? (
@@ -163,7 +174,10 @@ function tagsAmong(items: readonly CaptureListItem[]): TagRef[] {
   return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
-/** While selecting: how many are selected, select all or none, add a tag to them or take one off, and Done. */
+/** The most emails one change from the bar can cover: tagging and marking share it. */
+const MAX_AT_ONCE = Math.min(MAX_TAGGED_AT_ONCE, MAX_REVIEWED_AT_ONCE);
+
+/** While selecting: how many are selected, select all or none, add a tag to them or take one off, mark them, and Done. */
 function SelectionBar({
   all,
   shown,
@@ -194,18 +208,41 @@ function SelectionBar({
       refreshAfterTagChange(queryClient);
     },
   });
+  const review = useMutation({
+    mutationFn: (body: CaptureReviewRequest) => api.reviewCaptures(body),
+    onSuccess: (result) => showReviews(queryClient, result),
+  });
 
   const chosen = all.filter((item) => selected.has(item.id));
   const shownIds = new Set(shown.map((item) => item.id));
   const hidden = chosen.filter((item) => !shownIds.has(item.id)).length;
   const onChosen = tagsAmong(chosen);
-  const tooMany = chosen.length > MAX_TAGGED_AT_ONCE;
+  const tooMany = chosen.length > MAX_AT_ONCE;
   const canAct = chosen.length > 0 && !tooMany;
   const emails = plural(chosen.length, "email", "emails");
+  const busy = change.isPending || review.isPending;
+  const problem = change.isError
+    ? `Could not change the tags: ${change.error.message}`
+    : review.isError
+      ? `Could not change the review: ${review.error.message}`
+      : null;
+
+  async function markAll(state: ReviewState | null) {
+    if (!canAct) return;
+    setDone(null);
+    change.reset();
+    try {
+      await review.mutateAsync({ captureIds: chosen.map((item) => item.id), state });
+      setDone(state === null ? `Marked ${emails} to review.` : `Marked ${emails} ${REVIEW_LABELS[state].toLowerCase()}.`);
+    } catch {
+      // shown below from review.error
+    }
+  }
 
   async function add(name: string): Promise<boolean> {
     if (!canAct) return false;
     setDone(null);
+    review.reset();
     try {
       await change.mutateAsync({ captureIds: chosen.map((item) => item.id), add: [name] });
       setDone(`Added ${name} to ${emails}.`);
@@ -219,6 +256,7 @@ function SelectionBar({
     const tag = onChosen.find((t) => String(t.id) === toRemove);
     if (!canAct || !tag) return;
     setDone(null);
+    review.reset();
     const carrying = chosen.filter((item) => item.tags.some((t) => t.id === tag.id)).length;
     try {
       await change.mutateAsync({ captureIds: chosen.map((item) => item.id), remove: [tag.id] });
@@ -233,7 +271,7 @@ function SelectionBar({
     <section aria-label="Selected emails" className="sticky top-0 z-10 mb-3 flex flex-col gap-3 rounded-lg border border-accent bg-surface p-3 shadow-sm sm:px-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-medium">
-          {chosen.length === 0 ? "None selected. Tick the emails to tag." : `${chosen.length} selected`}
+          {chosen.length === 0 ? "None selected. Tick the emails to tag or mark." : `${chosen.length} selected`}
           {hidden > 0 ? <span className="font-normal text-muted">, {hidden} not shown here</span> : null}
         </p>
         <div className="flex flex-wrap gap-2">
@@ -249,7 +287,22 @@ function SelectionBar({
         </div>
       </div>
       {tooMany ? (
-        <Notice tone="warning">Select at most {MAX_TAGGED_AT_ONCE} emails at once.</Notice>
+        <Notice tone="warning">Select at most {MAX_AT_ONCE} emails at once.</Notice>
+      ) : null}
+      {canAct ? (
+        <div role="group" aria-label="Review" className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" className="px-3 py-1.5" disabled={busy} onClick={() => void markAll("checked")}>
+            <CircleCheck aria-hidden className="size-4" />
+            Mark checked
+          </Button>
+          <Button variant="secondary" className="px-3 py-1.5" disabled={busy} onClick={() => void markAll("not-bill")}>
+            <CircleSlash aria-hidden className="size-4" />
+            Mark not a bill
+          </Button>
+          <Button variant="quiet" className="px-3 py-1.5" disabled={busy} onClick={() => void markAll(null)}>
+            Mark to review
+          </Button>
+        </div>
       ) : null}
       {canAct ? (
         <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
@@ -279,14 +332,14 @@ function SelectionBar({
           ) : null}
         </div>
       ) : null}
-      {change.isError ? (
+      {problem ? (
         <Notice tone="error" live>
-          Could not change the tags: {change.error.message}
+          {problem}
         </Notice>
       ) : null}
       {/* Always there, so a screen reader hears each new message. */}
-      <p role="status" className={done && !change.isError ? "text-sm text-muted" : "sr-only"}>
-        {change.isError ? "" : (done ?? "")}
+      <p role="status" className={done && !problem ? "text-sm text-muted" : "sr-only"}>
+        {problem ? "" : (done ?? "")}
       </p>
     </section>
   );
@@ -355,9 +408,10 @@ function FilterTick({ label, checked, onChange }: { label: string; checked: bool
   );
 }
 
-/** The filters behind the Filters button: the kind of email, a range of days, and the ticks. */
+/** The filters behind the Filters button: the kind of email, how it was reviewed, a range of days, and the ticks. */
 function MoreFilters({ id, filters, onChange }: { id: string; filters: CaptureFilters; onChange: (changes: Partial<CaptureFilters>) => void }) {
   const kindId = useId();
+  const reviewId = useId();
   const fromId = useId();
   const toId = useId();
   const backwards = filters.from !== "" && filters.to !== "" && filters.from > filters.to;
@@ -374,6 +428,20 @@ function MoreFilters({ id, filters, onChange }: { id: string; filters: CaptureFi
             {EMAIL_KINDS.map((kind) => (
               <option key={kind} value={kind}>
                 {KIND_LABELS[kind]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <label htmlFor={reviewId} className="text-sm text-muted">
+            Review
+          </label>
+          <select id={reviewId} value={filters.review} onChange={(e) => onChange({ review: e.target.value as ReviewFilter })} className={field}>
+            <option value="all">Any</option>
+            <option value="todo">To review</option>
+            {REVIEW_STATES.map((state) => (
+              <option key={state} value={state}>
+                {REVIEW_LABELS[state]}
               </option>
             ))}
           </select>
@@ -430,15 +498,16 @@ export function CaptureListPage() {
     tags?.map((tag) => tag.id),
   );
   const fromList: FromList = { listSearch: listSearch ? `?${listSearch}` : "" };
-  const { query, billers: billerFilter, tag: tagFilter, kind, from, to, needsCheck, pastDue, unverified } = filters;
+  const { query, billers: billerFilter, tag: tagFilter, kind, from, to, review, needsCheck, pastDue, unverified } = filters;
   const moreOn = moreFiltersOn(filters);
   // Open at first when the address already asks for one of its filters.
   const [moreOpen, setMoreOpen] = useState(moreOn > 0);
   // By value: filters is a new object on every render.
   const shown = useMemo(
-    () => (all ? filterCaptures(all, { query, billers: billerFilter, tag: tagFilter, kind, from, to, needsCheck, pastDue, unverified }) : []),
-    [all, query, billerFilter, tagFilter, kind, from, to, needsCheck, pastDue, unverified],
+    () => (all ? filterCaptures(all, { query, billers: billerFilter, tag: tagFilter, kind, from, to, review, needsCheck, pastDue, unverified }) : []),
+    [all, query, billerFilter, tagFilter, kind, from, to, review, needsCheck, pastDue, unverified],
   );
+  const toReview = all ? all.filter((item) => item.review === null).length : 0;
   const narrowed = isNarrowed(filters);
   const filteredTag = typeof tagFilter === "number" ? tags?.find((tag) => tag.id === tagFilter) : undefined;
 
@@ -473,6 +542,7 @@ export function CaptureListPage() {
 
   function emptyMessage(): string {
     if (query.trim()) return `No captured mail matches "${query.trim()}"${billerFilter === "all" && tagFilter === "all" && moreOn === 0 ? "" : " here"}.`;
+    if (review === "todo" && moreOn === 1 && billerFilter === "all" && tagFilter === "all") return "Every captured email has been reviewed.";
     if (moreOn > 0) return "No captured email matches these filters.";
     if (tagFilter === "none") return billerFilter === "all" ? "Every captured email has a tag." : "No email here is without a tag.";
     if (filteredTag) return billerFilter === "all" ? `No captured email has the tag ${filteredTag.name}.` : `No email here has the tag ${filteredTag.name}.`;
@@ -511,6 +581,12 @@ export function CaptureListPage() {
                   Clear filters
                 </button>
               ) : null}
+              {/* A shortcut to what still needs a look; the Review filter behind Filters does the same and more. */}
+              {toReview > 0 && review !== "todo" ? (
+                <button type="button" onClick={() => setFilters({ review: "todo" })} className="text-sm font-medium text-accent hover:underline">
+                  Show {toReview} to review
+                </button>
+              ) : null}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {(tags && tags.length > 0) || tagFilter !== "all" ? <TagFilterSelect tags={tags ?? []} value={tagFilter} onChange={setTagFilter} /> : null}
@@ -533,7 +609,7 @@ export function CaptureListPage() {
             {selecting ? null : (
               <Button variant="secondary" className="px-3 py-1" onClick={() => setSelecting(true)}>
                 <CheckSquare aria-hidden className="size-4" />
-                Select to tag
+                Select
               </Button>
             )}
             <Link to="/tags" className="inline-flex items-center gap-1 px-1 text-sm font-medium text-accent hover:underline">

@@ -67,6 +67,7 @@ describe("emailCounts", () => {
       senderVerified: true,
       biller: { id: 1, name: "WM", kind: "bill", matchedOn: "wm.com" },
       picked: { kind: "bill", amount: "60.00", dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
+      review: null,
     } as unknown as CaptureListItem;
     const list = [
       base,
@@ -74,6 +75,21 @@ describe("emailCounts", () => {
       { ...base, picked: { ...base.picked, kind: "receipt", needsCheck: true } },
       { ...base, senderVerified: false, biller: null },
     ] as CaptureListItem[];
-    expect(emailCounts(list)).toEqual({ total: 4, bills: 3, needsCheck: 1, pastDue: 1, senderNotVerified: 1, noBiller: 1 });
+    expect(emailCounts(list)).toEqual({ total: 4, bills: 3, toReview: 4, notBill: 0, needsCheck: 1, pastDue: 1, senderNotVerified: 1, noBiller: 1 });
+  });
+
+  it("counts what is still to review, and drops a reviewed email from Need a check", () => {
+    const base = {
+      senderVerified: true,
+      biller: null,
+      picked: { kind: "bill", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: true },
+      review: null,
+    } as unknown as CaptureListItem;
+    const list = [
+      base,
+      { ...base, review: { state: "checked", by: "Sam", at: "2026-10-30T12:00:00Z" } },
+      { ...base, review: { state: "not-bill", by: null, at: "2026-10-30T12:00:00Z" } },
+    ] as CaptureListItem[];
+    expect(emailCounts(list)).toMatchObject({ total: 3, toReview: 1, notBill: 1, needsCheck: 1 });
   });
 });

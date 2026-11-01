@@ -13,8 +13,6 @@
 // tags stay with it while its mailbox is removed, and come back when the
 // mailbox is restored.
 
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { CaptureTagsResponse, Tag, TagListResponse, TagRef } from "../shared/api.js";
@@ -22,7 +20,7 @@ import { MAX_TAGGED_AT_ONCE, MAX_TAGS, normalizeTagName, tagKey, tagNameProblem 
 import type { CaptureStore } from "../store.js";
 import type { Database } from "./db.js";
 import { apiError, householdOf, jsonBody, MESSAGES, type AppEnv } from "./http.js";
-import { UID, UID_VALIDITY } from "./mail.js";
+import { isCapturedIn } from "./mail.js";
 import type { Mailboxes } from "./mailboxes.js";
 
 export interface TagDeps {
@@ -155,17 +153,6 @@ export function tagRoutes(deps: TagDeps): Hono<AppEnv> {
   const slugsOf = (householdId: number) => new Set(mailboxes.places(householdId).keys());
   const oneTag = (householdId: number, id: number) => listTags(db, householdId, slugsOf(householdId)).find((tag) => tag.id === id);
 
-  /** True when `id` names an email captured in one of the household's mailboxes. */
-  const isOwnEmail = (id: string, slugs: ReadonlySet<string>): boolean => {
-    const parts = id.split("/");
-    if (parts.length !== 3) return false;
-    const [slug, uidValidity, uidText] = parts as [string, string, string];
-    if (!slugs.has(slug) || !UID_VALIDITY.test(uidValidity) || !UID.test(uidText)) return false;
-    const uid = Number(uidText);
-    if (!Number.isSafeInteger(uid) || String(uid) !== uidText) return false;
-    return existsSync(join(store.messageDir(slug, uidValidity, uid), "capture.json"));
-  };
-
   app.get("/tags", (c) => {
     const householdId = householdOf(c);
     const body: TagListResponse = { tags: listTags(db, householdId, slugsOf(householdId)) };
@@ -216,7 +203,7 @@ export function tagRoutes(deps: TagDeps): Hono<AppEnv> {
     const householdId = householdOf(c);
     const { captureIds, add, remove } = c.req.valid("json");
     const slugs = slugsOf(householdId);
-    if (!captureIds.every((id) => isOwnEmail(id, slugs))) return apiError(c, 404, EMAIL_NOT_FOUND);
+    if (!captureIds.every((id) => isCapturedIn(store, id, slugs))) return apiError(c, 404, EMAIL_NOT_FOUND);
     const stamp = now().toISOString();
 
     const result = db.transaction((): { status: 400 | 404 | 409; problem: string } | { created: TagRef[] } => {

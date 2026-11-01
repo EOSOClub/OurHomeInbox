@@ -77,6 +77,7 @@ function stubServer(initial: string[] = [], on: Record<string, number[]> = {}, f
     invoice: null,
     extraction: extract(capture),
     tags: refs(idOf(capture)),
+    review: null,
   });
   const item = (capture: Capture): CaptureListItem => ({
     id: idOf(capture),
@@ -97,6 +98,7 @@ function stubServer(initial: string[] = [], on: Record<string, number[]> = {}, f
     senderVerified: false,
     picked: { kind: "bill", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
     tags: refs(idOf(capture)),
+    review: null,
   });
 
   vi.stubGlobal(
@@ -263,7 +265,7 @@ describe("tags in the captured-mail list", () => {
   it("tags several emails at once and takes a tag off them", async () => {
     const sent = stubServer(["Paid"], { "proton-bills/1/3": [1] });
     show("/");
-    fireEvent.click(await screen.findByRole("button", { name: "Select to tag" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Select" }));
     const bar = screen.getByRole("region", { name: "Selected emails" });
     expect(bar.textContent).toContain("None selected.");
 

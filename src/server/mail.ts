@@ -3,6 +3,7 @@
 // and the invoice pass (invoices.ts). Always for a household's own mailboxes
 // (mailboxes.ts). Everything here came from strangers' email: it is only read.
 
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { log } from "../log.js";
@@ -13,6 +14,21 @@ import type { MailboxPlace } from "./mailboxes.js";
 
 export const UID_VALIDITY = /^\d+$/;
 export const UID = /^[1-9]\d*$/;
+
+/**
+ * True when `id` ("<slug>/<uidValidity>/<uid>", as CaptureListItem.id) names
+ * an email captured in one of `slugs` (a household's mailboxes that are set
+ * up). For the routes that tag or mark emails by id.
+ */
+export function isCapturedIn(store: CaptureStore, id: string, slugs: ReadonlySet<string>): boolean {
+  const parts = id.split("/");
+  if (parts.length !== 3) return false;
+  const [slug, uidValidity, uidText] = parts as [string, string, string];
+  if (!slugs.has(slug) || !UID_VALIDITY.test(uidValidity) || !UID.test(uidText)) return false;
+  const uid = Number(uidText);
+  if (!Number.isSafeInteger(uid) || String(uid) !== uidText) return false;
+  return existsSync(join(store.messageDir(slug, uidValidity, uid), "capture.json"));
+}
 
 /** A light shape check, so a damaged capture.json is skipped instead of breaking the list. */
 function isCapture(value: unknown): value is Capture {

@@ -41,15 +41,17 @@
 //   PUT    /api/tags/:id                     TagInput -> Tag (renames it)
 //   DELETE /api/tags/:id                     -> 204 (taken off every email)
 //   POST   /api/captures/tags                CaptureTagsRequest -> CaptureTagsResponse (tags or untags emails)
+//   PUT    /api/captures/review              CaptureReviewRequest -> CaptureReviewResponse (marks emails checked or not a bill, or clears that)
 //
 // :mailbox is the mailbox's slug (CaptureListItem.mailboxSlug). :field is one
-// of FIELDS (shared/extraction.ts). Billers and their rules, and tags, belong
-// to the signed-in person's household.
+// of FIELDS (shared/extraction.ts). Billers and their rules, tags and reviews
+// belong to the signed-in person's household.
 
 import type { BillerKind } from "./billers.js";
 import type { Capture, CapturedAddress } from "./capture.js";
 import type { BillerRule, Extraction, ExtractionSummary, FieldChoice, FieldName } from "./extraction.js";
 import type { InvoiceInfo, InvoiceOutcome } from "./invoice.js";
+import type { ReviewState } from "./review.js";
 import type { SenderCheck } from "./sender.js";
 import type { LogLevel, Provider, Security } from "./settings.js";
 
@@ -120,6 +122,16 @@ export interface CaptureListItem {
   picked: ExtractionSummary;
   /** The household's tags on it, by name. */
   tags: TagRef[];
+  /** Whether a person marked it checked or not a bill; null while it still needs a look. */
+  review: CaptureReview | null;
+}
+
+/** A person's mark on an email (see shared/review.ts). */
+export interface CaptureReview {
+  state: ReviewState;
+  /** Who marked it, or null when that account is gone. */
+  by: string | null;
+  at: string;
 }
 
 /** Which biller an email was matched to, and on which of its senders. */
@@ -149,6 +161,8 @@ export interface CaptureDetailResponse {
   extraction: Extraction;
   /** The household's tags on it, by name. */
   tags: TagRef[];
+  /** Whether a person marked it checked or not a bill; null while it still needs a look. */
+  review: CaptureReview | null;
 }
 
 /** What Fix offers for one value of one email. */
@@ -422,4 +436,21 @@ export interface CaptureTagsResponse {
   captures: Array<{ id: string; tags: TagRef[] }>;
   /** Tags made by this change (named in `add` but new to the household). */
   created: TagRef[];
+}
+
+/**
+ * Marking emails, all or nothing: `state` "checked" or "not-bill", or null to
+ * clear the mark (the email needs a look again). At most MAX_REVIEWED_AT_ONCE
+ * emails (shared/review.ts). An email already marked the same way keeps who
+ * marked it and when. Emails marked "not-bill" are never sent to OurHome.
+ */
+export interface CaptureReviewRequest {
+  /** As CaptureListItem.id. */
+  captureIds: string[];
+  state: ReviewState | null;
+}
+
+export interface CaptureReviewResponse {
+  /** Each email asked about, with its mark now. */
+  captures: Array<{ id: string; review: CaptureReview | null }>;
 }

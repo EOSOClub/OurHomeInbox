@@ -25,6 +25,7 @@ describe("openDatabase", () => {
       "biller_rules",
       "biller_senders",
       "billers",
+      "capture_reviews",
       "capture_tags",
       "households",
       "mailboxes",
