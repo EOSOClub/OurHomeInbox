@@ -129,7 +129,16 @@ describe("finding values by their labels", () => {
   it("keeps both values, for a person to check, when one label gives two", () => {
     const x = email("<p>Amount Due: $10.00</p><p>Amount Due: $12.00</p><p>Due Date: 11/04/2026</p>");
     expect(values(x).amount).toEqual(["10.00", "12.00"]);
-    expect(summarize(x)).toEqual({ kind: "bill", amount: null, dueDate: "2026-11-04", paidDate: null, dueNow: false, needsCheck: true });
+    expect(summarize(x)).toEqual({
+      kind: "bill",
+      amount: null,
+      dueDate: "2026-11-04",
+      paidDate: null,
+      dueNow: false,
+      needsCheck: true,
+      // The export still gets both amounts, so a person can see the doubt.
+      values: { amount: ["10.00", "12.00"], dueDate: ["2026-11-04"] },
+    });
   });
 
   it("reads a credit as a negative amount", () => {

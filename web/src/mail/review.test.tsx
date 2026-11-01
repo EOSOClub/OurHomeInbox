@@ -73,7 +73,7 @@ function stubServer(options: { failWith?: string } = {}) {
     hasHtml: false,
     biller: null,
     senderVerified: true,
-    picked: { kind: "bill", amount: "42.10", dueDate: null, paidDate: null, dueNow: false, needsCheck: capture.uid === 2 },
+    picked: { kind: "bill", amount: "42.10", dueDate: null, paidDate: null, dueNow: false, needsCheck: capture.uid === 2, values: { amount: ["42.10"] } },
     tags: [],
     review: reviews.get(idOf(capture)) ?? null,
   });
@@ -183,7 +183,7 @@ describe("review on the list", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Select" }));
     const bar = screen.getByRole("region", { name: "Selected emails" });
-    expect(within(bar).getByText("None selected. Tick the emails to tag or mark.")).toBeTruthy();
+    expect(within(bar).getByText("None selected. Tick the emails to tag, mark or export.")).toBeTruthy();
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select: Payment reminder/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select: Water bill/ }));
     fireEvent.click(within(bar).getByRole("button", { name: "Mark checked" }));

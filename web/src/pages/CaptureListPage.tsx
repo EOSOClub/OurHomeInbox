@@ -7,10 +7,12 @@
 // every filter are in the page address, so Back from an email or a link opens
 // the list the same way). Each row opens that email. Select turns the rows
 // into checkboxes, to mark several emails at once (checked, not a bill, or to
-// review) or to add a tag to them or take one off.
+// review), to add a tag to them or take one off, or to export them. Export
+// saves the emails shown as a file, in the format chosen under "Export as":
+// CSV (the default), Excel or JSON (see mail/exportFile.ts).
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckSquare, CircleCheck, CircleSlash, Inbox, Link2, Paperclip, ReceiptText, Search, SlidersHorizontal, Tags } from "lucide-react";
+import { CheckSquare, CircleCheck, CircleSlash, Download, Inbox, Link2, Paperclip, ReceiptText, Search, SlidersHorizontal, Tags } from "lucide-react";
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router";
 import type { CaptureListItem, CaptureListResponse, CaptureReviewRequest, CaptureTagsRequest, Tag, TagRef } from "../../../src/shared/api";
@@ -37,6 +39,7 @@ import {
 } from "../mail/captureList";
 import { KIND_LABELS, summaryLine } from "../mail/picked";
 import { ReviewBadge } from "../mail/CaptureReview";
+import { downloadExport, EXPORT_FORMAT_LABELS, EXPORT_FORMATS, type ExportFormat } from "../mail/exportFile";
 import { needsCheckNow, REVIEW_LABELS } from "../mail/review";
 import { TagAdder, TagChips } from "../mail/Tags";
 import { queryKeys, refreshAfterTagChange, showReviews, useCaptures, useMailboxes, useTags } from "../queries";
@@ -174,16 +177,68 @@ function tagsAmong(items: readonly CaptureListItem[]): TagRef[] {
   return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
-/** The most emails one change from the bar can cover: tagging and marking share it. */
+/** The most emails one change from the bar can cover: tagging and marking share it. Exporting changes nothing, so it has no limit. */
 const MAX_AT_ONCE = Math.min(MAX_TAGGED_AT_ONCE, MAX_REVIEWED_AT_ONCE);
 
-/** While selecting: how many are selected, select all or none, add a tag to them or take one off, mark them, and Done. */
+/** Saves these emails as a file; the message to show, saying how many went into which file, or why it failed. */
+function exportEmails(items: readonly CaptureListItem[], format: ExportFormat): { ok: boolean; message: string } {
+  try {
+    const name = downloadExport(items, format);
+    return { ok: true, message: `Saved ${plural(items.length, "email", "emails")} to ${name}.` };
+  } catch (err) {
+    return { ok: false, message: `Could not export: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/** "Export as" with its choice of format, and the button that saves the file. */
+function ExportControls({
+  format,
+  onFormat,
+  label,
+  disabled = false,
+  onExport,
+}: {
+  format: ExportFormat;
+  onFormat: (format: ExportFormat) => void;
+  label: string;
+  disabled?: boolean;
+  onExport: () => void;
+}) {
+  const id = useId();
+  return (
+    <div role="group" aria-label="Export" className="flex flex-wrap items-center gap-2">
+      <label htmlFor={id} className="text-sm text-muted">
+        Export as
+      </label>
+      <select
+        id={id}
+        value={format}
+        onChange={(e) => onFormat(e.target.value as ExportFormat)}
+        className="rounded-md border border-line bg-surface px-2 py-1 text-sm text-ink"
+      >
+        {EXPORT_FORMATS.map((f) => (
+          <option key={f} value={f}>
+            {EXPORT_FORMAT_LABELS[f]}
+          </option>
+        ))}
+      </select>
+      <Button variant="secondary" className="px-3 py-1" disabled={disabled} onClick={onExport}>
+        <Download aria-hidden className="size-4" />
+        {label}
+      </Button>
+    </div>
+  );
+}
+
+/** While selecting: how many are selected, select all or none, add a tag to them or take one off, mark them, export them, and Done. */
 function SelectionBar({
   all,
   shown,
   selected,
   setSelected,
   known,
+  format,
+  onFormat,
   onDone,
 }: {
   all: readonly CaptureListItem[];
@@ -191,12 +246,15 @@ function SelectionBar({
   selected: ReadonlySet<string>;
   setSelected: (ids: Set<string>) => void;
   known: readonly TagRef[];
+  format: ExportFormat;
+  onFormat: (format: ExportFormat) => void;
   onDone: () => void;
 }) {
   const queryClient = useQueryClient();
   const removeId = useId();
   const [toRemove, setToRemove] = useState("");
   const [done, setDone] = useState<string | null>(null);
+  const [exportProblem, setExportProblem] = useState<string | null>(null);
   const change = useMutation({
     mutationFn: (body: CaptureTagsRequest) => api.changeCaptureTags(body),
     onSuccess: (result) => {
@@ -225,12 +283,27 @@ function SelectionBar({
     ? `Could not change the tags: ${change.error.message}`
     : review.isError
       ? `Could not change the review: ${review.error.message}`
-      : null;
+      : exportProblem;
+
+  /** Before each action: the last one's message and error go. */
+  function startAction() {
+    setDone(null);
+    setExportProblem(null);
+    change.reset();
+    review.reset();
+  }
+
+  function exportChosen() {
+    if (chosen.length === 0) return;
+    startAction();
+    const result = exportEmails(chosen, format);
+    if (result.ok) setDone(result.message);
+    else setExportProblem(result.message);
+  }
 
   async function markAll(state: ReviewState | null) {
     if (!canAct) return;
-    setDone(null);
-    change.reset();
+    startAction();
     try {
       await review.mutateAsync({ captureIds: chosen.map((item) => item.id), state });
       setDone(state === null ? `Marked ${emails} to review.` : `Marked ${emails} ${REVIEW_LABELS[state].toLowerCase()}.`);
@@ -241,8 +314,7 @@ function SelectionBar({
 
   async function add(name: string): Promise<boolean> {
     if (!canAct) return false;
-    setDone(null);
-    review.reset();
+    startAction();
     try {
       await change.mutateAsync({ captureIds: chosen.map((item) => item.id), add: [name] });
       setDone(`Added ${name} to ${emails}.`);
@@ -255,8 +327,7 @@ function SelectionBar({
   async function remove() {
     const tag = onChosen.find((t) => String(t.id) === toRemove);
     if (!canAct || !tag) return;
-    setDone(null);
-    review.reset();
+    startAction();
     const carrying = chosen.filter((item) => item.tags.some((t) => t.id === tag.id)).length;
     try {
       await change.mutateAsync({ captureIds: chosen.map((item) => item.id), remove: [tag.id] });
@@ -271,7 +342,7 @@ function SelectionBar({
     <section aria-label="Selected emails" className="sticky top-0 z-10 mb-3 flex flex-col gap-3 rounded-lg border border-accent bg-surface p-3 shadow-sm sm:px-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-medium">
-          {chosen.length === 0 ? "None selected. Tick the emails to tag or mark." : `${chosen.length} selected`}
+          {chosen.length === 0 ? "None selected. Tick the emails to tag, mark or export." : `${chosen.length} selected`}
           {hidden > 0 ? <span className="font-normal text-muted">, {hidden} not shown here</span> : null}
         </p>
         <div className="flex flex-wrap gap-2">
@@ -332,6 +403,8 @@ function SelectionBar({
           ) : null}
         </div>
       ) : null}
+      {/* Exporting changes nothing, so it is not held to the limit above. */}
+      {chosen.length > 0 ? <ExportControls format={format} onFormat={onFormat} label="Export selected" onExport={exportChosen} /> : null}
       {problem ? (
         <Notice tone="error" live>
           {problem}
@@ -490,6 +563,9 @@ export function CaptureListPage() {
   }
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [exported, setExported] = useState<{ ok: boolean; message: string } | null>(null);
+  // Shared by the list's Export and the Select bar's; CSV each time the page opens.
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("csv");
   const searchId = useId();
   const moreId = useId();
   const all = captures.data?.captures;
@@ -513,6 +589,8 @@ export function CaptureListPage() {
 
   // Replaced, not pushed: Back leaves the list instead of undoing each keystroke or tick.
   function changeList(next: URLSearchParams) {
+    // "Saved 12 emails" no longer describes the list once it shows something else.
+    setExported(null);
     setListSearch(next.toString());
     setSearchParams(next, { replace: true, state: { by: LIST_FILTERS } });
   }
@@ -607,16 +685,41 @@ export function CaptureListPage() {
           {moreOpen ? <MoreFilters id={moreId} filters={filters} onChange={setFilters} /> : null}
           <div className="mb-3 flex flex-wrap items-center gap-2">
             {selecting ? null : (
-              <Button variant="secondary" className="px-3 py-1" onClick={() => setSelecting(true)}>
+              <Button
+                variant="secondary"
+                className="px-3 py-1"
+                onClick={() => {
+                  setExported(null);
+                  setSelecting(true);
+                }}
+              >
                 <CheckSquare aria-hidden className="size-4" />
                 Select
               </Button>
+            )}
+            {/* The bar has its own Export while selecting. */}
+            {selecting || shown.length === 0 ? null : (
+              <ExportControls
+                format={exportFormat}
+                onFormat={setExportFormat}
+                label={`Export ${plural(shown.length, "email", "emails")}`}
+                onExport={() => setExported(exportEmails(shown, exportFormat))}
+              />
             )}
             <Link to="/tags" className="inline-flex items-center gap-1 px-1 text-sm font-medium text-accent hover:underline">
               <Tags aria-hidden className="size-4" />
               Manage tags
             </Link>
           </div>
+          {exported && !exported.ok ? (
+            <Notice tone="error" live className="mb-3">
+              {exported.message}
+            </Notice>
+          ) : null}
+          {/* Always there, so a screen reader hears each new message. */}
+          <p role="status" className={exported?.ok ? "mb-3 text-sm text-muted" : "sr-only"}>
+            {exported?.ok ? exported.message : ""}
+          </p>
           {selecting ? (
             <SelectionBar
               all={all}
@@ -624,6 +727,8 @@ export function CaptureListPage() {
               selected={selected}
               setSelected={setSelected}
               known={tags ?? []}
+              format={exportFormat}
+              onFormat={setExportFormat}
               onDone={() => {
                 setSelecting(false);
                 setSelected(new Set());

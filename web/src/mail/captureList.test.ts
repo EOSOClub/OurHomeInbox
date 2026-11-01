@@ -44,7 +44,7 @@ function item(
     hasHtml: false,
     biller,
     senderVerified: true,
-    picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
+    picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false, values: {} },
     tags,
     review: null,
     ...more,
@@ -68,6 +68,7 @@ const picked = (more: Partial<CaptureListItem["picked"]>): CaptureListItem["pick
   paidDate: null,
   dueNow: false,
   needsCheck: false,
+  values: { amount: ["10.00"] },
   ...more,
 });
 

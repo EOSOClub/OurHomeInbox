@@ -53,6 +53,7 @@ const summary = (more: Partial<ExtractionSummary>): ExtractionSummary => ({
   paidDate: null,
   dueNow: false,
   needsCheck: false,
+  values: { amount: ["42.10"] },
   ...more,
 });
 

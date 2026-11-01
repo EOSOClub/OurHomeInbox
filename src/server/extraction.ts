@@ -667,5 +667,6 @@ export function summarize(extraction: Extraction): ExtractionSummary {
     paidDate: single("paidDate"),
     dueNow: extraction.dueNow !== null,
     needsCheck: extraction.fields.some((f) => f.values.length > 1),
+    values: Object.fromEntries(extraction.fields.map((f) => [f.field, f.values.map((v) => v.value)])),
   };
 }

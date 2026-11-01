@@ -66,7 +66,7 @@ describe("emailCounts", () => {
     const base = {
       senderVerified: true,
       biller: { id: 1, name: "WM", kind: "bill", matchedOn: "wm.com" },
-      picked: { kind: "bill", amount: "60.00", dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
+      picked: { kind: "bill", amount: "60.00", dueDate: null, paidDate: null, dueNow: false, needsCheck: false, values: { amount: ["60.00"] } },
       review: null,
     } as unknown as CaptureListItem;
     const list = [
@@ -82,7 +82,7 @@ describe("emailCounts", () => {
     const base = {
       senderVerified: true,
       biller: null,
-      picked: { kind: "bill", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: true },
+      picked: { kind: "bill", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: true, values: {} },
       review: null,
     } as unknown as CaptureListItem;
     const list = [

@@ -96,7 +96,7 @@ function stubServer(initial: string[] = [], on: Record<string, number[]> = {}, f
     hasHtml: false,
     biller: null,
     senderVerified: false,
-    picked: { kind: "bill", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
+    picked: { kind: "bill", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false, values: {} },
     tags: refs(idOf(capture)),
     review: null,
   });

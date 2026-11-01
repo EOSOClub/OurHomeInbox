@@ -148,4 +148,10 @@ export interface ExtractionSummary {
   dueNow: boolean;
   /** True when some value has more than one candidate and needs a person. */
   needsCheck: boolean;
+  /**
+   * Every value found, by field (as PickedValue.value), for the export. A
+   * field the reader did not find is left out; more than one value means the
+   * email disagrees with itself.
+   */
+  values: Partial<Record<FieldName, string[]>>;
 }
