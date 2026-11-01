@@ -95,6 +95,7 @@ function showEmail(capture: Capture, biller: BillerMatch | null = BILLER, rules:
     sender: checkSender(capture),
     invoice: null,
     extraction: extract(capture, rules),
+    tags: [],
   };
   render(withQueries(<CaptureDetailView detail={detail} />));
   return screen.getByRole("region", { name: "Picked out" });

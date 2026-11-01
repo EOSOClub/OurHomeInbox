@@ -1,4 +1,4 @@
-// One captured email: who sent it (and whether that was confirmed), its biller, when, and where it was found,
+// One captured email: who sent it (and whether that was confirmed), its biller, its tags, when, and where it was found,
 // what the reader picked out of it, then tabs for each part of what was captured
 // (and the invoice its link gave, when there is one). Takes the API's reply directly, so it
 // can be shown (and tested) without fetching anything.
@@ -13,6 +13,7 @@ import { Tabs, type TabItem } from "../components/Tabs";
 import { formatAddressList, formatDateTime, subjectDisplay } from "../format";
 import { AttachmentsPanel, EmailPanel, HeadersPanel, HtmlSourcePanel, InvoicePanel, LinksPanel, RawPanel, TextPanel } from "./CapturePanels";
 import { PickedOut } from "./PickedOut";
+import { TagChips } from "./Tags";
 
 function Addresses({ list }: { list: CapturedAddress[] }) {
   return list.length ? <>{formatAddressList(list)}</> : <span className="text-muted">None</span>;
@@ -31,8 +32,11 @@ function SenderLine({ check }: { check: SenderCheck }) {
   );
 }
 
-/** `actions` go under the email's details, for the page to add buttons that need its router. */
-export function CaptureDetailView({ detail, actions }: { detail: CaptureDetailResponse; actions?: ReactNode }) {
+/**
+ * `actions` go under the email's details, for the page to add buttons that need its router.
+ * `tags` replaces the plain list of its tags, for the page to add the tag editor (which needs the server).
+ */
+export function CaptureDetailView({ detail, actions, tags }: { detail: CaptureDetailResponse; actions?: ReactNode; tags?: ReactNode }) {
   const { id, capture, extraction } = detail;
   const { invoice } = detail;
   const tabs: TabItem[] = [
@@ -71,6 +75,9 @@ export function CaptureDetailView({ detail, actions }: { detail: CaptureDetailRe
             ) : (
               <span className="text-muted">No biller matches this sender yet</span>
             )}
+          </DetailRow>
+          <DetailRow label="Tags">
+            {tags ?? (detail.tags.length ? <TagChips tags={detail.tags} /> : <span className="text-muted">None</span>)}
           </DetailRow>
           <DetailRow label="To">
             <Addresses list={capture.to} />

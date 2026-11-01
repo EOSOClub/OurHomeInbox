@@ -18,6 +18,7 @@ export const queryKeys = {
   billers: ["billers"] as const,
   biller: (id: number) => ["billers", id] as const,
   billerRules: (id: number) => ["billers", id, "rules"] as const,
+  tags: ["tags"] as const,
 };
 
 /** Every biller's rules list, whichever biller. */
@@ -120,4 +121,14 @@ export function useChoices(id: string, field: FieldName) {
 
 export function useBillerRules(id: number) {
   return useQuery({ queryKey: queryKeys.billerRules(id), queryFn: ({ signal }) => api.getBillerRules(id, signal) });
+}
+
+export function useTags() {
+  return useQuery({ queryKey: queryKeys.tags, queryFn: ({ signal }) => api.listTags(signal) });
+}
+
+/** After tags are added, renamed or deleted, or emails tagged: the tags (and their counts) and every email's tags. */
+export function refreshAfterTagChange(client: QueryClient): void {
+  void client.invalidateQueries({ queryKey: queryKeys.tags });
+  void client.invalidateQueries({ queryKey: queryKeys.captures });
 }

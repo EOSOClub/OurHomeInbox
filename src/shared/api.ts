@@ -36,10 +36,15 @@
 //   GET    /api/billers/:id/rules            BillerRulesResponse
 //   PUT    /api/billers/:id/rules/:field     BillerRuleInput -> 204
 //   DELETE /api/billers/:id/rules/:field     -> 204
+//   GET    /api/tags                         TagListResponse
+//   POST   /api/tags                         TagInput -> Tag (201)
+//   PUT    /api/tags/:id                     TagInput -> Tag (renames it)
+//   DELETE /api/tags/:id                     -> 204 (taken off every email)
+//   POST   /api/captures/tags                CaptureTagsRequest -> CaptureTagsResponse (tags or untags emails)
 //
 // :mailbox is the mailbox's slug (CaptureListItem.mailboxSlug). :field is one
-// of FIELDS (shared/extraction.ts). Billers and their rules belong to the
-// signed-in person's household.
+// of FIELDS (shared/extraction.ts). Billers and their rules, and tags, belong
+// to the signed-in person's household.
 
 import type { BillerKind } from "./billers.js";
 import type { Capture, CapturedAddress } from "./capture.js";
@@ -113,6 +118,8 @@ export interface CaptureListItem {
   senderVerified: boolean;
   /** What the reader picked out of it, in short. */
   picked: ExtractionSummary;
+  /** The household's tags on it, by name. */
+  tags: TagRef[];
 }
 
 /** Which biller an email was matched to, and on which of its senders. */
@@ -140,6 +147,8 @@ export interface CaptureDetailResponse {
   invoice: InvoiceInfo | null;
   /** What the reader picked out of it with its biller's rules, and where each value was found. */
   extraction: Extraction;
+  /** The household's tags on it, by name. */
+  tags: TagRef[];
 }
 
 /** What Fix offers for one value of one email. */
@@ -370,4 +379,47 @@ export interface BillerRulesResponse {
 /** Saving a rule: the words the value comes after, as chosen in Fix. */
 export interface BillerRuleInput {
   label: string;
+}
+
+/** A tag as an email carries it. */
+export interface TagRef {
+  id: number;
+  name: string;
+}
+
+/** One of the household's tags. */
+export interface Tag extends TagRef {
+  /** How many of the household's emails carry it (in mailboxes that are set up). */
+  emails: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TagListResponse {
+  /** By name. */
+  tags: Tag[];
+}
+
+/** Adding or renaming a tag. The name is tidied (see shared/tags.ts); one the household already has, ignoring case, is refused. */
+export interface TagInput {
+  name: string;
+}
+
+/**
+ * Tagging or untagging emails, all or nothing. `add` names tags (one the
+ * household does not have yet is made); `remove` gives tag ids. At least one
+ * of the two, and at most MAX_TAGGED_AT_ONCE emails (shared/tags.ts).
+ */
+export interface CaptureTagsRequest {
+  /** As CaptureListItem.id. */
+  captureIds: string[];
+  add?: string[];
+  remove?: number[];
+}
+
+export interface CaptureTagsResponse {
+  /** Each email asked about, with its tags now. */
+  captures: Array<{ id: string; tags: TagRef[] }>;
+  /** Tags made by this change (named in `add` but new to the household). */
+  created: TagRef[];
 }

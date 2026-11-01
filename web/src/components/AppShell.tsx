@@ -3,7 +3,7 @@
 // while a mailbox needs someone).
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Activity, Inbox, LogOut, Mail, ReceiptText, Settings } from "lucide-react";
+import { Activity, Inbox, LogOut, Mail, ReceiptText, Settings, Tags } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import type { SessionUser } from "../../../src/shared/api";
@@ -73,12 +73,15 @@ export function AppShell({ user, children }: { user: SessionUser; children: Reac
           </div>
           <nav aria-label="Main" className="flex gap-1 overflow-x-auto">
             <NavItem to="/" active={onMail} icon={<Mail aria-hidden className="size-4" />}>
-              {/* Shorter on a phone, so all four fit across. */}
+              {/* Shorter on a phone, so all five fit across. */}
               <span className="sm:hidden">Mail</span>
               <span className="hidden sm:inline">Captured mail</span>
             </NavItem>
             <NavItem to="/billers" active={onBillers} icon={<ReceiptText aria-hidden className="size-4" />}>
               Billers
+            </NavItem>
+            <NavItem to="/tags" active={pathname === "/tags"} icon={<Tags aria-hidden className="size-4" />}>
+              Tags
             </NavItem>
             <NavItem to="/status" active={pathname === "/status"} icon={<Activity aria-hidden className="size-4" />}>
               Status

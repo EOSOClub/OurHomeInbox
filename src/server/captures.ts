@@ -7,7 +7,7 @@
 //   GET /api/captures/:mailbox/:uidValidity/:uid/invoice              the invoice its link gave, as a download
 //
 // Each email carries the household's biller for its sender (see matching.ts),
-// whether the mail provider confirmed that sender (see sender.ts), and what
+// its tags (see tags.ts), whether the mail provider confirmed that sender (see sender.ts), and what
 // the reader picked out of it with that biller's rules (see
 // extraction.ts and rules.ts), worked out on every request so a change to a
 // biller or a rule shows at once.
@@ -20,7 +20,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Hono, type Context } from "hono";
 import { log } from "../log.js";
-import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse, FieldChoicesResponse } from "../shared/api.js";
+import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse, FieldChoicesResponse, TagRef } from "../shared/api.js";
 import type { Capture } from "../shared/capture.js";
 import { FIELDS, type BillerRule, type ExtractionSummary, type FieldName } from "../shared/extraction.js";
 import type { InvoiceInfo, InvoiceRecord } from "../shared/invoice.js";
@@ -34,6 +34,7 @@ import type { MailboxPlace, Mailboxes } from "./mailboxes.js";
 import { BillerMatcher } from "./matching.js";
 import { billerEmails, householdRules } from "./rules.js";
 import { checkSender } from "./sender.js";
+import { captureTags, tagsOn } from "./tags.js";
 
 export interface CaptureDeps {
   store: CaptureStore;
@@ -75,14 +76,19 @@ class SummaryCache {
   }
 }
 
-/** The household's mailboxes, billers and their rules, read once per request. */
+/** The household's mailboxes, billers and their rules, read once per request. Its tags are read when first asked for. */
 class HouseholdReader {
   readonly matcher: BillerMatcher;
   /** The household's mailboxes by slug: only their mail is shown. */
   readonly places: Map<string, MailboxPlace>;
   private readonly rules: Map<number, BillerRule[]>;
+  private tags: Map<string, TagRef[]> | null = null;
 
-  constructor(db: Database, mailboxes: Mailboxes, householdId: number) {
+  constructor(
+    private readonly db: Database,
+    mailboxes: Mailboxes,
+    private readonly householdId: number,
+  ) {
     this.matcher = new BillerMatcher(listBillers(db, householdId));
     this.places = mailboxes.places(householdId);
     this.rules = householdRules(db, householdId);
@@ -90,6 +96,11 @@ class HouseholdReader {
 
   rulesFor(billerId: number | undefined): BillerRule[] {
     return billerId === undefined ? [] : (this.rules.get(billerId) ?? []);
+  }
+
+  tagsOn(captureId: string): TagRef[] {
+    this.tags ??= captureTags(this.db, this.householdId);
+    return this.tags.get(captureId) ?? [];
   }
 }
 
@@ -114,6 +125,7 @@ function listItem(stored: StoredCapture, reader: HouseholdReader, summaries: Sum
     biller,
     senderVerified: checkSender(capture).verified,
     picked: summaries.get(id, capture, reader.rulesFor(biller?.id), stored.invoice),
+    tags: reader.tagsOn(id),
   };
 }
 
@@ -219,14 +231,16 @@ export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
     if (found instanceof Response) return found;
     const reader = readerFor(c);
     const biller = reader.matcher.match(found.capture.from);
+    const id = `${found.slug}/${found.uidValidity}/${found.uid}`;
     const body: CaptureDetailResponse = {
-      id: `${found.slug}/${found.uidValidity}/${found.uid}`,
+      id,
       mailboxSlug: found.slug,
       capture: found.capture,
       biller,
       sender: checkSender(found.capture),
       invoice: invoiceInfo(found.invoice),
       extraction: extract(found.capture, reader.rulesFor(biller?.id), found.invoice?.text ?? null),
+      tags: tagsOn(deps.db, householdOf(c), id),
     };
     return c.json(body);
   });

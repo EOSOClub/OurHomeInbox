@@ -16,6 +16,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
 import { StatusPage } from "./pages/StatusPage";
 import { SignInPage } from "./pages/SignInPage";
+import { TagsPage } from "./pages/TagsPage";
 import { useSession } from "./queries";
 
 export function App() {
@@ -48,6 +49,7 @@ export function App() {
         <Route path="/billers" element={<BillersPage />} />
         <Route path="/billers/new" element={<NewBillerPage />} />
         <Route path="/billers/:id" element={<EditBillerPage />} />
+        <Route path="/tags" element={<TagsPage />} />
         <Route path="/status" element={<StatusPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/settings/mailboxes/new" element={<NewMailboxPage />} />

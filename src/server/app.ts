@@ -22,6 +22,7 @@ import { ruleRoutes } from "./rules.js";
 import { loadSession, requireSignIn, sessionRoutes } from "./session.js";
 import { settingsRoutes, type InstallSettings } from "./settings.js";
 import { statusRoutes } from "./status.js";
+import { tagRoutes } from "./tags.js";
 import { webRoutes } from "./web.js";
 
 export interface AppDeps {
@@ -81,6 +82,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route("/api", statusRoutes({ mailboxes, store: deps.store, checking: deps.checking, version: deps.version, startedAt: deps.startedAt }));
   app.route("/api", billerRoutes({ db: deps.db, now }));
   app.route("/api", ruleRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
+  app.route("/api", tagRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
   // Before the web app's catch-all, so an unknown API address is a JSON 404, never the app's page.
   app.all("/api", (c) => apiError(c, 404, MESSAGES.notFound));
   app.all("/api/*", (c) => apiError(c, 404, MESSAGES.notFound));

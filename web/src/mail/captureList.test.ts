@@ -1,8 +1,8 @@
 // Tests for searching the captured-mail list.
 
 import { describe, expect, it } from "vitest";
-import type { BillerMatch, CaptureListItem } from "../../../src/shared/api";
-import { captureDate, filterCaptures } from "./captureList";
+import type { BillerMatch, CaptureListItem, TagRef } from "../../../src/shared/api";
+import { captureDate, filterCaptures, tagFilterFrom } from "./captureList";
 
 function item(
   id: string,
@@ -11,6 +11,7 @@ function item(
   address: string,
   mailbox = "Proton bills",
   biller: BillerMatch | null = null,
+  tags: TagRef[] = [],
 ): CaptureListItem {
   return {
     id,
@@ -30,14 +31,17 @@ function item(
     biller,
     senderVerified: true,
     picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
+    tags,
   };
 }
 
 const ACME: BillerMatch = { id: 7, name: "Acme Utilities", kind: "bill", matchedOn: "power.example" };
+const TAXES: TagRef = { id: 1, name: "Taxes 2026" };
+const PAID: TagRef = { id: 2, name: "Paid" };
 
 const items = [
-  item("a", "Your water bill", "City Water", "bills@water.example"),
-  item("b", "Statement ready", "Power Co", "noreply@power.example", "Gmail bills", ACME),
+  item("a", "Your water bill", "City Water", "bills@water.example", undefined, null, [PAID, TAXES]),
+  item("b", "Statement ready", "Power Co", "noreply@power.example", "Gmail bills", ACME, [PAID]),
   item("c", null, "", "someone@else.example"),
 ];
 
@@ -66,6 +70,37 @@ describe("filterCaptures", () => {
     expect(filterCaptures(items, "", "matched").map((i) => i.id)).toEqual(["b"]);
     expect(filterCaptures(items, "", "unmatched").map((i) => i.id)).toEqual(["a", "c"]);
     expect(filterCaptures(items, "water", "matched")).toEqual([]);
+  });
+
+  it("matches a tag's name", () => {
+    expect(filterCaptures(items, "taxes").map((i) => i.id)).toEqual(["a"]);
+    expect(filterCaptures(items, "paid").map((i) => i.id)).toEqual(["a", "b"]);
+  });
+
+  it("narrows to one tag, or to emails with no tags, alongside the other filters", () => {
+    expect(filterCaptures(items, "", "all", PAID.id).map((i) => i.id)).toEqual(["a", "b"]);
+    expect(filterCaptures(items, "", "all", TAXES.id).map((i) => i.id)).toEqual(["a"]);
+    expect(filterCaptures(items, "", "all", "none").map((i) => i.id)).toEqual(["c"]);
+    expect(filterCaptures(items, "", "matched", PAID.id).map((i) => i.id)).toEqual(["b"]);
+    expect(filterCaptures(items, "water", "all", PAID.id).map((i) => i.id)).toEqual(["a"]);
+    expect(filterCaptures(items, "", "all", 99)).toEqual([]);
+  });
+});
+
+describe("tagFilterFrom", () => {
+  it("reads ?tag= from the page address", () => {
+    expect(tagFilterFrom(null, [1, 2])).toBe("all");
+    expect(tagFilterFrom("none", [1, 2])).toBe("none");
+    expect(tagFilterFrom("2", [1, 2])).toBe(2);
+  });
+
+  it("ignores a tag that does not exist or a value that is not an id", () => {
+    expect(tagFilterFrom("9", [1, 2])).toBe("all");
+    for (const bad of ["", "0", "-1", "1.5", "abc", "01"]) expect(tagFilterFrom(bad, [1, 2])).toBe("all");
+  });
+
+  it("keeps the id while the tags are loading", () => {
+    expect(tagFilterFrom("9", undefined)).toBe(9);
   });
 });
 

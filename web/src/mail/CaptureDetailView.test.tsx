@@ -51,9 +51,9 @@ function makeCapture(overrides: Partial<Capture> = {}): Capture {
   };
 }
 
-function detail(capture: Capture, biller: BillerMatch | null = null): CaptureDetailResponse {
+function detail(capture: Capture, biller: BillerMatch | null = null, tags: CaptureDetailResponse["tags"] = []): CaptureDetailResponse {
   // The server's own reader, so the picks match what the API would send.
-  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller, sender: checkSender(capture), invoice: null, extraction: extract(capture) };
+  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller, sender: checkSender(capture), invoice: null, extraction: extract(capture), tags };
 }
 
 function openTab(name: string) {

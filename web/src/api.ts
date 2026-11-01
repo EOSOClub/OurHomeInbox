@@ -12,6 +12,8 @@ import type {
   BillerRulesResponse,
   CaptureDetailResponse,
   CaptureListResponse,
+  CaptureTagsRequest,
+  CaptureTagsResponse,
   CheckingState,
   FieldChoicesResponse,
   LoginRequest,
@@ -26,6 +28,9 @@ import type {
   SettingsResponse,
   SetupRequest,
   StatusResponse,
+  Tag,
+  TagInput,
+  TagListResponse,
 } from "../../src/shared/api";
 import type { FieldName } from "../../src/shared/extraction";
 
@@ -153,4 +158,9 @@ export const api = {
   getBillerRules: (id: number, signal?: AbortSignal) => request<BillerRulesResponse>("GET", `/api/billers/${id}/rules`, { signal }),
   saveBillerRule: (id: number, field: FieldName, body: BillerRuleInput) => request<void>("PUT", `/api/billers/${id}/rules/${field}`, { body }),
   deleteBillerRule: (id: number, field: FieldName) => request<void>("DELETE", `/api/billers/${id}/rules/${field}`),
+  listTags: (signal?: AbortSignal) => request<TagListResponse>("GET", "/api/tags", { signal }),
+  createTag: (body: TagInput) => request<Tag>("POST", "/api/tags", { body }),
+  renameTag: (id: number, body: TagInput) => request<Tag>("PUT", `/api/tags/${id}`, { body }),
+  deleteTag: (id: number) => request<void>("DELETE", `/api/tags/${id}`),
+  changeCaptureTags: (body: CaptureTagsRequest) => request<CaptureTagsResponse>("POST", "/api/captures/tags", { body }),
 };

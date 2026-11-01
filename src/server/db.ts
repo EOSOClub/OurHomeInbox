@@ -1,5 +1,5 @@
 // The server's own database: households, accounts, sign-in sessions and each
-// household's billers and their rules, in one SQLite file next to the captured mail. Captured
+// household's mailboxes, billers and their rules, and tags, in one SQLite file next to the captured mail. Captured
 // mail itself stays as files (see store.ts).
 //
 // The schema changes through MIGRATIONS only, in order, never edited once
@@ -125,6 +125,30 @@ const MIGRATIONS: string[] = [
   // with its captured mail (its slug stays taken). NULL while it is in use.
   `
   ALTER TABLE mailboxes ADD COLUMN removed_at text;
+  `,
+  // Tags, per household (see tags.ts). name_key is the name in lower case
+  // (shared/tags.ts tagKey), so "Été" and "été" are one tag, which NOCASE
+  // alone would not catch. An email is named by its capture id
+  // ("<slug>/<uidValidity>/<uid>"), which never changes: the slug is kept
+  // through a rename and a restore.
+  `
+  CREATE TABLE tags (
+    id integer PRIMARY KEY,
+    household_id integer NOT NULL REFERENCES households(id),
+    name text NOT NULL,
+    name_key text NOT NULL,
+    created_at text NOT NULL,
+    updated_at text NOT NULL
+  );
+  CREATE UNIQUE INDEX tags_household_name ON tags(household_id, name_key);
+  CREATE TABLE capture_tags (
+    tag_id integer NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    household_id integer NOT NULL REFERENCES households(id),
+    capture_id text NOT NULL,
+    created_at text NOT NULL,
+    PRIMARY KEY (tag_id, capture_id)
+  );
+  CREATE INDEX capture_tags_capture ON capture_tags(household_id, capture_id);
   `,
 ];
 

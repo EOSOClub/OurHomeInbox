@@ -64,6 +64,7 @@ describe("GET /api/captures", () => {
       biller: null,
       senderVerified: false,
       picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false },
+      tags: [],
     });
     expect(captures[0]).toMatchObject({ uid: 2, hasHtml: true, linkCount: 2, attachmentCount: 0 });
     expect(captures[1]).toMatchObject({ uid: 3, date: null, capturedAt: "2026-10-20T00:00:00.000Z" });
