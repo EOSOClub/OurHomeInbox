@@ -445,9 +445,37 @@ docker info >/dev/null 2>&1 || fail "Docker daemon is not reachable. Is Docker r
 ok "Docker daemon is running"
 
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 not found (need 'docker compose')."
+# docker-compose.yml reads .env with "format: raw" (so a "$" in a password is
+# kept), which Compose understands from 2.30 on. Older ones stop with a
+# puzzling error about "format", so say plainly what is needed instead.
+COMPOSE_MIN_MAJOR=2
+COMPOSE_MIN_MINOR=30
+# Succeeds when the version given (e.g. "2.30.0", "v5.5.1", "2.31.0-desktop.1")
+# is at least COMPOSE_MIN_MAJOR.COMPOSE_MIN_MINOR; fails when older; returns 2
+# when it cannot be read.
+compose_new_enough() {
+  local v="${1#v}" major minor
+  case "$v" in *.*) ;; *) return 2 ;; esac
+  major="${v%%.*}"
+  minor="${v#*.}"; minor="${minor%%[!0-9]*}"
+  case "$major" in ''|*[!0-9]*) return 2 ;; esac
+  case "$minor" in ''|*[!0-9]*) return 2 ;; esac
+  [ "$major" -gt "$COMPOSE_MIN_MAJOR" ] && return 0
+  [ "$major" -eq "$COMPOSE_MIN_MAJOR" ] && [ "$minor" -ge "$COMPOSE_MIN_MINOR" ] && return 0
+  return 1
+}
+COMPOSE_VERSION="$(docker compose version --short 2>/dev/null | head -n1 | tr -d '[:space:]')"
+if compose_new_enough "$COMPOSE_VERSION"; then
+  :
+else
+  case $? in
+    1) fail "Docker Compose $COMPOSE_VERSION is too old; OurHomeInbox needs $COMPOSE_MIN_MAJOR.$COMPOSE_MIN_MINOR or newer. Update Docker Desktop (or the docker-compose-plugin package on Linux) and run this again." ;;
+    *) warn "Could not read the Docker Compose version ('${COMPOSE_VERSION}'). It needs $COMPOSE_MIN_MAJOR.$COMPOSE_MIN_MINOR or newer; carrying on." ;;
+  esac
+fi
 DC=(docker compose --env-file "$ENV_FILE")
 DC_STR="${DC[*]}"
-ok "Compose available (${DC_STR})"
+ok "Compose ${COMPOSE_VERSION:-version unknown} available (${DC_STR})"
 
 [ -f docker-compose.yml ] || fail "docker-compose.yml not found in $SCRIPT_DIR."
 

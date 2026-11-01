@@ -1,7 +1,7 @@
 # OurHomeInbox. Reads its two settings files from the repo root:
-#   .env        secrets, passed in as environment variables (a changed one
+#   .env secrets, passed in as environment variables (a changed one
 #               takes effect when deploy.sh runs the container again)
-#   config.yml  the install's settings, mounted writable: the web page's
+#   config.yml the install's settings, mounted writable: the web page's
 #               Settings save the reading schedule and log level into it
 #               (keeping its comments) and use them at once
 #
@@ -16,7 +16,7 @@
 #
 # By hand, from the repo root:
 #   copy .env.example to .env and config.example.yml to config.yml, fill them in
-#   docker network create ourhome_net        # skip if it already exists
+#   docker network create ourhome_net # skip if it already exists
 #   docker compose -f docker/docker-compose.yml up -d --build
 # (then always ourhome_net, and the web page on http://127.0.0.1:8080)
 #
@@ -43,12 +43,15 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
-    # Runs as you (deploy.sh fills these in on Linux) so the captured mail in
+    # Runs as you (deploy.sh fills these in on Linux), so the captured mail in
     # data/ belongs to you. Docker Desktop on Windows and macOS ignores this.
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     env_file:
       # raw: values are passed exactly as written. Without it, compose reads
       # a "$" in a password as a variable and silently changes the password.
+      # Needs Docker Compose 2.30 or newer. Some editors (PyCharm) flag
+      # "format" as unexpected because their built-in schema is older; the
+      # line is correct.
       - path: ../.env
         required: true
         format: raw
