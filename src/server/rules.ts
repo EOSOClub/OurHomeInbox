@@ -6,7 +6,8 @@
 //
 // Scoped to the household like billers: another household's biller is "not
 // found". Rules are applied when an email is read (captures.ts), never
-// stored on the email, so a change shows on every email at once.
+// stored on the email, so a change shows on every email at once. Saving or
+// removing one breaks the biller's run toward Send automatically (handoff/trust.ts).
 
 import { Hono, type Context } from "hono";
 import { z } from "zod";
@@ -20,6 +21,7 @@ import { apiError, householdOf, jsonBody, MESSAGES, type AppEnv } from "./http.j
 import { eachCapture } from "./mail.js";
 import type { MailboxPlace, Mailboxes } from "./mailboxes.js";
 import { BillerMatcher } from "./matching.js";
+import { breakRun } from "./handoff/trust.js";
 
 export interface RuleDeps {
   store: CaptureStore;
@@ -142,6 +144,8 @@ export function ruleRoutes(deps: RuleDeps): Hono<AppEnv> {
         label,
         now().toISOString(),
       );
+      // A value needed fixing: the biller's run of clean checks starts again.
+      breakRun(db, id);
       return true;
     });
     if (!saved) return apiError(c, 404, BILLER_NOT_FOUND);
@@ -153,7 +157,11 @@ export function ruleRoutes(deps: RuleDeps): Hono<AppEnv> {
     if (!isField(field)) return apiError(c, 404, NO_SUCH_FIELD);
     const id = ownBiller(c, db);
     if (id === null) return apiError(c, 404, BILLER_NOT_FOUND);
-    const removed = db.run("DELETE FROM biller_rules WHERE biller_id = ? AND field = ?", id, field).changes;
+    const removed = db.transaction(() => {
+      const changes = db.run("DELETE FROM biller_rules WHERE biller_id = ? AND field = ?", id, field).changes;
+      if (changes > 0) breakRun(db, id);
+      return changes;
+    });
     if (removed === 0) return apiError(c, 404, NO_SUCH_RULE);
     return c.body(null, 204);
   });

@@ -4,20 +4,21 @@
 // narrowed to emails with a biller, or without one; to one tag, or to emails
 // with no tags; to one kind of email; to a range of days; to the emails still
 // to review, or marked checked or not a bill; and to the emails that need a
-// check, say they are past due, or come from a sender the mail provider did
-// not verify. All of it lives in the page address, so Back from an email, or a
-// link, opens the list the same way.
+// check, say they are past due, come from a sender the mail provider did
+// not verify, or are payments that need a bill. All of it lives in the page
+// address, so Back from an email, or a link, opens the list the same way.
 
 import type { CaptureListItem } from "../../../src/shared/api";
 import { EMAIL_KINDS, type EmailKind } from "../../../src/shared/extraction";
 import { REVIEW_STATES, type ReviewState } from "../../../src/shared/review";
-import { needsCheckNow } from "./review";
+import { needsBill } from "../payments/paymentText";
+import { isToReview, needsCheckNow } from "./review";
 
 export type BillerFilter = "all" | "matched" | "unmatched";
 /** Every email, emails with no tags, or emails with the tag of this id. */
 export type TagFilter = "all" | "none" | number;
 export type KindFilter = "all" | EmailKind;
-/** Every email, the ones nobody has marked yet ("todo"), or the ones marked this way. */
+/** Every email, the Review list ("todo": nobody has marked them yet, or payments that need a bill), or the ones marked this way. */
 export type ReviewFilter = "all" | "todo" | ReviewState;
 
 export interface CaptureFilters {
@@ -35,6 +36,8 @@ export interface CaptureFilters {
   pastDue: boolean;
   /** Only emails whose sender the mail provider did not verify. */
   unverified: boolean;
+  /** Only payments that no bill fits and nobody chose a bill for. */
+  needsBill: boolean;
 }
 
 export const NO_FILTERS: CaptureFilters = {
@@ -48,6 +51,7 @@ export const NO_FILTERS: CaptureFilters = {
   needsCheck: false,
   pastDue: false,
   unverified: false,
+  needsBill: false,
 };
 
 function searchText(item: CaptureListItem): string {
@@ -65,11 +69,12 @@ export function filterCaptures(items: readonly CaptureListItem[], filters: Parti
     if (f.tag === "none" && item.tags.length > 0) return false;
     if (typeof f.tag === "number" && !item.tags.some((t) => t.id === f.tag)) return false;
     if (f.kind !== "all" && item.picked.kind !== f.kind) return false;
-    if (f.review === "todo" && item.review !== null) return false;
+    if (f.review === "todo" && !isToReview(item)) return false;
     if (f.review !== "all" && f.review !== "todo" && item.review?.state !== f.review) return false;
     if (f.needsCheck && !needsCheckNow(item)) return false;
     if (f.pastDue && !item.picked.dueNow) return false;
     if (f.unverified && item.senderVerified) return false;
+    if (f.needsBill && !needsBill(item)) return false;
     if (f.from || f.to) {
       const day = localDay(captureDate(item));
       if (day === "" || (f.from && day < f.from) || (f.to && day > f.to)) return false;
@@ -82,7 +87,7 @@ export function filterCaptures(items: readonly CaptureListItem[], filters: Parti
 
 /** How many of the filters behind the Filters button are on (the two dates count as one). */
 export function moreFiltersOn(f: CaptureFilters): number {
-  return [f.kind !== "all", f.from !== "" || f.to !== "", f.review !== "all", f.needsCheck, f.pastDue, f.unverified].filter(Boolean).length;
+  return [f.kind !== "all", f.from !== "" || f.to !== "", f.review !== "all", f.needsCheck, f.pastDue, f.unverified, f.needsBill].filter(Boolean).length;
 }
 
 /** True when the search or any filter narrows the list. */
@@ -111,6 +116,7 @@ const PARAM = {
   needsCheck: "check",
   pastDue: "pastdue",
   unverified: "unverified",
+  needsBill: "needsbill",
 } as const satisfies Record<keyof CaptureFilters, string>;
 
 /** A real calendar day written "YYYY-MM-DD", else "". */
@@ -138,6 +144,7 @@ export function filtersFrom(params: URLSearchParams, tagIds: readonly number[] |
     needsCheck: params.get(PARAM.needsCheck) === "1",
     pastDue: params.get(PARAM.pastDue) === "1",
     unverified: params.get(PARAM.unverified) === "1",
+    needsBill: params.get(PARAM.needsBill) === "1",
   };
 }
 

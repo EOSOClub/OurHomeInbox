@@ -104,8 +104,11 @@ export interface StoredCapture {
   invoice: InvoiceRecord | null;
 }
 
-/** Every captured email in the given mailboxes (a household's). A damaged one is skipped with a warning. */
-export async function* eachCapture(mailboxes: Iterable<MailboxPlace>, store: CaptureStore): AsyncGenerator<StoredCapture> {
+/** Where one captured email is kept, before anything is read from it. */
+export type MessagePlace = Omit<StoredCapture, "capture" | "invoice">;
+
+/** Every message folder in the given mailboxes (a household's), without reading what is in them. */
+export async function* eachMessageDir(mailboxes: Iterable<MailboxPlace>, store: CaptureStore): AsyncGenerator<MessagePlace> {
   for (const mailbox of mailboxes) {
     const { slug } = mailbox;
     const mailboxDir = join(store.root, slug);
@@ -113,16 +116,23 @@ export async function* eachCapture(mailboxes: Iterable<MailboxPlace>, store: Cap
       for (const uidName of await subfolders(join(mailboxDir, uidValidity), UID)) {
         const uid = Number(uidName);
         if (!Number.isSafeInteger(uid)) continue;
-        const dir = join(mailboxDir, uidValidity, uidName);
-        let capture: Capture | null;
-        try {
-          capture = await readCapture(dir);
-        } catch (err) {
-          log.warn(`Skipping ${join(dir, "capture.json")}: ${err instanceof Error ? err.message : String(err)}`);
-          continue;
-        }
-        if (capture) yield { id: `${slug}/${uidValidity}/${uid}`, slug, mailbox, uidValidity, uid, dir, capture, invoice: await readInvoiceRecord(dir) };
+        yield { id: `${slug}/${uidValidity}/${uid}`, slug, mailbox, uidValidity, uid, dir: join(mailboxDir, uidValidity, uidName) };
       }
     }
+  }
+}
+
+/** Every captured email in the given mailboxes (a household's). A damaged one is skipped with a warning. */
+export async function* eachCapture(mailboxes: Iterable<MailboxPlace>, store: CaptureStore): AsyncGenerator<StoredCapture> {
+  for await (const place of eachMessageDir(mailboxes, store)) {
+    const { dir } = place;
+    let capture: Capture | null;
+    try {
+      capture = await readCapture(dir);
+    } catch (err) {
+      log.warn(`Skipping ${join(dir, "capture.json")}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+    if (capture) yield { ...place, capture, invoice: await readInvoiceRecord(dir) };
   }
 }

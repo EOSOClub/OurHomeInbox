@@ -11,6 +11,7 @@ import { extract } from "../../../src/server/extraction";
 import { checkSender } from "../../../src/server/sender";
 import { CaptureDetailView } from "./CaptureDetailView";
 import { SafeEmailFrame } from "./SafeEmailFrame";
+import { HANDOFF_WAITS } from "../testFixtures";
 
 afterEach(cleanup);
 
@@ -53,7 +54,7 @@ function makeCapture(overrides: Partial<Capture> = {}): Capture {
 
 function detail(capture: Capture, biller: BillerMatch | null = null, tags: CaptureDetailResponse["tags"] = []): CaptureDetailResponse {
   // The server's own reader, so the picks match what the API would send.
-  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller, sender: checkSender(capture), invoice: null, extraction: extract(capture), tags, review: null };
+  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller, sender: checkSender(capture), invoice: null, extraction: extract(capture), tags, review: null, handoff: HANDOFF_WAITS, payment: null };
 }
 
 function openTab(name: string) {

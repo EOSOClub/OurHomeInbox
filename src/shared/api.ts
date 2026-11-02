@@ -47,6 +47,15 @@
 //   DELETE /api/tags/:id                     -> 204 (taken off every email)
 //   POST   /api/captures/tags                CaptureTagsRequest -> CaptureTagsResponse (tags or untags emails)
 //   PUT    /api/captures/review              CaptureReviewRequest -> CaptureReviewResponse (marks emails checked or not a bill, or clears that)
+//   PUT    /api/billers/:id/auto-send        AutoSendRequest -> Biller (Send automatically on or off; shared/handoff.ts)
+//   GET    /api/ourhome                      OurHomeConnection (the household's connection to OurHome; shared/handoff.ts)
+//   POST   /api/ourhome/token                OurHomeTokenRequest -> OurHomeTokenResponse (a new token, shown once; replaces the old)
+//   DELETE /api/ourhome/token                -> OurHomeConnection (the token stops working)
+//   PUT    /api/ourhome                      OurHomeConnectionUpdate -> OurHomeConnection (the start date)
+//   GET    /api/handoff/hello, /api/handoff/documents   for OurHome, with its token, not a sign-in (shared/handoff.ts)
+//   POST   /api/handoff/changes              for OurHome, with its token: what a person did to an email bill there (shared/handoff.ts)
+//   GET    /api/captures/:mailbox/:uidValidity/:uid/bill-choices[?all=1]   BillChoicesResponse (the bills a payment can pay; shared/payments.ts)
+//   PUT    /api/captures/:mailbox/:uidValidity/:uid/pairing                PairingRequest -> PairingResponse; 409 once sent to OurHome
 //
 // :mailbox is the mailbox's slug (CaptureListItem.mailboxSlug). :field is one
 // of FIELDS (shared/extraction.ts). Billers and their rules, tags, reviews,
@@ -58,7 +67,9 @@
 import type { BillerKind } from "./billers.js";
 import type { Capture, CapturedAddress } from "./capture.js";
 import type { BillerRule, Extraction, ExtractionSummary, FieldChoice, FieldName } from "./extraction.js";
+import type { HandoffInfo } from "./handoff.js";
 import type { InvoiceInfo, InvoiceOutcome } from "./invoice.js";
+import type { PaymentInfo } from "./payments.js";
 import type { ReviewState } from "./review.js";
 import type { SenderCheck } from "./sender.js";
 import type { LogLevel, Provider, Security } from "./settings.js";
@@ -136,6 +147,10 @@ export interface CaptureListItem {
   tags: TagRef[];
   /** Whether a person marked it checked or not a bill; null while it still needs a look. */
   review: CaptureReview | null;
+  /** Whether it goes to OurHome, waits for a person, or never goes, and why (see shared/handoff.ts). */
+  handoff: HandoffInfo;
+  /** For a payment, the bill it pays; for a bill, what pays it (see shared/payments.ts). Null for any other email. */
+  payment: PaymentInfo | null;
 }
 
 /** A person's mark on an email (see shared/review.ts). */
@@ -175,6 +190,10 @@ export interface CaptureDetailResponse {
   tags: TagRef[];
   /** Whether a person marked it checked or not a bill; null while it still needs a look. */
   review: CaptureReview | null;
+  /** Whether it goes to OurHome, waits for a person, or never goes, and why. */
+  handoff: HandoffInfo;
+  /** For a payment, the bill it pays; for a bill, what pays it. Null for any other email. */
+  payment: PaymentInfo | null;
 }
 
 /** What Fix offers for one value of one email. */
@@ -413,6 +432,10 @@ export interface Biller {
   notes: string;
   /** Get the invoice behind its emails' "View Invoice" links (see invoices.ts). */
   fetchInvoices: boolean;
+  /** Its clean emails go to OurHome without a person checking them (see shared/handoff.ts). */
+  autoSend: boolean;
+  /** Its current run of Checked emails that needed no fix (Send automatically is offered at CHECKS_BEFORE_AUTO). */
+  cleanChecks: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -508,4 +531,10 @@ export interface CaptureReviewRequest {
 export interface CaptureReviewResponse {
   /** Each email asked about, with its mark now. */
   captures: Array<{ id: string; review: CaptureReview | null }>;
+  /**
+   * Billers whose run of Checked emails needing no fix has reached
+   * CHECKS_BEFORE_AUTO with this change, and that do not send automatically
+   * yet: the page offers to turn it on (owner, 2026-11-01).
+   */
+  offerAutoSend: Array<{ id: number; name: string }>;
 }

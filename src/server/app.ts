@@ -14,12 +14,15 @@ import { log } from "../log.js";
 import type { CheckingState, HealthResponse } from "../shared/api.js";
 import type { CaptureStore } from "../store.js";
 import { billerRoutes } from "./billers.js";
+import { CaptureCache } from "./captureCache.js";
 import { captureRoutes } from "./captures.js";
 import type { Database } from "./db.js";
-import { apiError, crossSiteCheck, MAX_BODY_BYTES, MESSAGES, securityHeaders, type AppEnv } from "./http.js";
+import { apiError, crossSiteCheck, MAX_BODY_BYTES, MAX_CHANGES_BODY_BYTES, MESSAGES, securityHeaders, type AppEnv } from "./http.js";
 import { mailboxRoutes, type Mailboxes } from "./mailboxes.js";
 import { reviewRoutes } from "./reviews.js";
 import { userRoutes } from "./users.js";
+import { handoffRoutes } from "./handoff/routes.js";
+import { paymentRoutes } from "./payments/routes.js";
 import { ruleRoutes } from "./rules.js";
 import { loadSession, requireSignIn, sessionRoutes } from "./session.js";
 import { settingsRoutes, type InstallSettings } from "./settings.js";
@@ -51,9 +54,12 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
   app.use("*", securityHeaders);
+  const smallBodies = bodyLimit({ maxSize: MAX_BODY_BYTES, onError: (c) => apiError(c, 413, MESSAGES.tooLarge) });
+  // OurHome's change reports may hold 100 Message-IDs at their longest; only that route takes more.
+  const changeReports = bodyLimit({ maxSize: MAX_CHANGES_BODY_BYTES, onError: (c) => apiError(c, 413, MESSAGES.tooLarge) });
   app.use(
     "/api/*",
-    bodyLimit({ maxSize: MAX_BODY_BYTES, onError: (c) => apiError(c, 413, MESSAGES.tooLarge) }),
+    (c, next) => (c.req.method === "POST" && c.req.path === "/api/handoff/changes" ? changeReports(c, next) : smallBodies(c, next)),
     crossSiteCheck,
     loadSession({ db: deps.db, now }),
     requireSignIn,
@@ -64,6 +70,8 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     return c.json(body);
   });
   const { settings, mailboxes } = deps;
+  // One for the app: what each email's files give, read again only when they change.
+  const cache = new CaptureCache();
   // First-time setup makes the household that config.yml's mailboxes are copied into.
   app.route("/api", sessionRoutes({ db: deps.db, now, onSetUp: () => {
         mailboxes.importFromConfig(settings.config);
@@ -71,7 +79,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
       },
     }),
   );
-  app.route("/api", captureRoutes({ store: deps.store, db: deps.db, mailboxes }));
+  app.route("/api", captureRoutes({ store: deps.store, db: deps.db, mailboxes, cache }));
   app.route(
     "/api",
     settingsRoutes({
@@ -85,8 +93,10 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route("/api", billerRoutes({ db: deps.db, now }));
   app.route("/api", ruleRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
   app.route("/api", tagRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
-  app.route("/api", reviewRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
+  app.route("/api", reviewRoutes({ store: deps.store, db: deps.db, mailboxes, cache, now }));
   app.route("/api", userRoutes({ db: deps.db, now }));
+  app.route("/api", handoffRoutes({ store: deps.store, db: deps.db, mailboxes, cache, now }));
+  app.route("/api", paymentRoutes({ store: deps.store, db: deps.db, mailboxes, cache, now }));
   // Before the web app's catch-all, so an unknown API address is a JSON 404, never the app's page.
   app.all("/api", (c) => apiError(c, 404, MESSAGES.notFound));
   app.all("/api/*", (c) => apiError(c, 404, MESSAGES.notFound));

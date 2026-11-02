@@ -3,18 +3,28 @@
 //                                read every capture.every_minutes (first right away),
 //                                each read followed by getting new emails' invoices
 //   node dist/index.js capture   read every mailbox once, capture what is new, exit
+//   node dist/index.js handoff-preview [file.json]
+//                                log, for each household, whether each email goes
+//                                to OurHome and why, and which bill each payment
+//                                pays; with a file, also write the
+//                                documents OurHome would get there. Changes nothing
+//                                in the database (the vault's "Hand-off" note)
 // Captured mail is kept under data/mail (see store.ts), accounts and mailboxes
 // in data/inbox.db. Settings changed on the web page apply without a restart.
 
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { ConfigError, configPath, loadConfig, loadDotEnv, type Config } from "./config.js";
 import { log, setLogLevel } from "./log.js";
+import { CaptureCache } from "./server/captureCache.js";
+import { readHouseholdEmails } from "./server/captures.js";
 import { openDatabase, type Database } from "./server/db.js";
+import { emailLink, liveStartDate } from "./server/handoff/store.js";
 import { SecretKeyError } from "./server/secrets.js";
+import type { PaymentInfo } from "./shared/payments.js";
 import { createService } from "./server/service.js";
 import { CaptureStore } from "./store.js";
 
@@ -94,10 +104,70 @@ async function captureOnce(config: Config, db: Database, store: CaptureStore): P
   return failed === 0;
 }
 
+/** The preview's word on an email's pairing: which bill a payment pays, or what pays a bill. */
+function pairingNote(payment: PaymentInfo | null): string {
+  if (!payment) return "";
+  if (payment.role === "bill") {
+    const paid = payment.paidBy ? `paid by ${payment.paidBy.id}` : "no payment yet";
+    return ` [bill: ${paid}${payment.ourhome ? `; OurHome reported it ${payment.ourhome.change} ${payment.ourhome.at}` : ""}]`;
+  }
+  if (payment.needsBill) return " [payment: needs a bill]";
+  if (payment.how === "own") return ` [payment: paid on its own${payment.locked ? ", locked" : ""}]`;
+  const bill = payment.bill ? `pays ${payment.bill.id}` : "its bill's email is missing";
+  return ` [payment: ${bill}, chosen ${payment.how === "person" ? "by a person" : "automatically"}${payment.paidLate ? ", paid late" : ""}${payment.locked ? ", locked" : ""}]`;
+}
+
+/**
+ * Shows what the feed to OurHome would hold for each household, without a
+ * token and without recording any offer: a line per email on the log and,
+ * when a file is named, the documents as JSON in it.
+ */
+async function previewHandoff(config: Config, db: Database, store: CaptureStore, jsonFile: string | undefined): Promise<boolean> {
+  const running = service(config, db, store);
+  if (!running) return false;
+  const households = db.all<{ id: number; name: string }>("SELECT id, name FROM households ORDER BY id");
+  const cache = new CaptureCache();
+  if (households.length === 0) log.info("No household yet: first-time setup has not been done.");
+  const report = [];
+  for (const household of households) {
+    const startDate = liveStartDate(db, household.id);
+    log.info(`${household.name}: reading its emails (${startDate ? `OurHome connected, start date ${startDate}` : "no OurHome connection yet, so no start date applies"})`);
+    const emails = (await readHouseholdEmails({ store, db, mailboxes: running.mailboxes, cache }, household.id)).reverse();
+    const counts = { goes: 0, waits: 0, never: 0 };
+    for (const { item, decision } of emails) {
+      counts[decision.state]++;
+      log.info(`  ${decision.state.padEnd(5)} ${item.id}  ${decision.reason}${pairingNote(item.payment)}`);
+    }
+    log.info(`${household.name}: ${counts.goes} go, ${counts.waits} wait, ${counts.never} never go (of ${emails.length})`);
+    report.push({
+      household: household.name,
+      startDate,
+      counts,
+      emails: emails.map(({ item, decision }) => ({
+        captureId: item.id,
+        link: emailLink(item.id),
+        state: decision.state,
+        reason: decision.reason,
+        ...(item.payment ? { pairing: item.payment } : {}),
+        ...(decision.document ? { document: decision.document } : {}),
+      })),
+    });
+  }
+  if (jsonFile) {
+    await writeFile(jsonFile, `${JSON.stringify(report, null, 2)}\n`);
+    log.info(`Wrote the documents OurHome would get to ${resolve(jsonFile)}`);
+  } else {
+    log.info('Add a file name to also write the documents as JSON, e.g. "handoff-preview preview.json".');
+  }
+  return true;
+}
+
+const COMMANDS = ["serve", "capture", "handoff-preview"];
+
 async function main(): Promise<number> {
   const command = process.argv[2] ?? "serve";
-  if (command !== "serve" && command !== "capture") {
-    log.error(`Unknown command "${command}". Use "serve" (the default) or "capture".`);
+  if (!COMMANDS.includes(command)) {
+    log.error(`Unknown command "${command}". Use "serve" (the default), "capture" or "handoff-preview".`);
     return 2;
   }
 
@@ -121,6 +191,7 @@ async function main(): Promise<number> {
 
   try {
     if (command === "capture") return (await captureOnce(config, db, store)) ? 0 : 1;
+    if (command === "handoff-preview") return (await previewHandoff(config, db, store, process.argv[3])) ? 0 : 1;
     return await runService(config, db, store);
   } finally {
     db.close();

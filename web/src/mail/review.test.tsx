@@ -13,6 +13,7 @@ import type { CaptureDetailResponse, CaptureListItem, CaptureReview, CaptureRevi
 import type { Capture } from "../../../src/shared/capture";
 import { CaptureDetailPage } from "../pages/CaptureDetailPage";
 import { CaptureListPage } from "../pages/CaptureListPage";
+import { HANDOFF_WAITS } from "../testFixtures";
 
 afterEach(() => {
   cleanup();
@@ -76,6 +77,8 @@ function stubServer(options: { failWith?: string } = {}) {
     picked: { kind: "bill", amount: "42.10", dueDate: null, paidDate: null, dueNow: false, needsCheck: capture.uid === 2, values: { amount: ["42.10"] } },
     tags: [],
     review: reviews.get(idOf(capture)) ?? null,
+    handoff: HANDOFF_WAITS,
+    payment: null,
   });
   const detail = (capture: Capture): CaptureDetailResponse => ({
     id: idOf(capture),
@@ -87,6 +90,8 @@ function stubServer(options: { failWith?: string } = {}) {
     extraction: extract(capture),
     tags: [],
     review: reviews.get(idOf(capture)) ?? null,
+    handoff: HANDOFF_WAITS,
+    payment: null,
   });
   vi.stubGlobal(
     "fetch",
@@ -106,7 +111,7 @@ function stubServer(options: { failWith?: string } = {}) {
           if (body.state === null) reviews.delete(id);
           else if (reviews.get(id)?.state !== body.state) reviews.set(id, { state: body.state, by: "Sam Smith", at: "2026-10-30T12:00:00Z" });
         }
-        return reply(200, { captures: body.captureIds.map((id) => ({ id, review: reviews.get(id) ?? null })) });
+        return reply(200, { captures: body.captureIds.map((id) => ({ id, review: reviews.get(id) ?? null })), offerAutoSend: [] });
       }
       const one = CAPTURES.find((c) => path === `/api/captures/${idOf(c)}`);
       if (one) return reply(200, detail(one));

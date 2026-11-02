@@ -102,10 +102,20 @@ function EmailsCard() {
           <Count label="Captured" value={counts.total} list={{}} />
           <Count label="Bills" value={counts.bills} list={{ kind: "bill" }} />
           <Count label="To review" value={counts.toReview} list={{ review: "todo" }}>
-            Nobody has marked them checked or not a bill yet.
+            Nobody has marked them checked or not a bill yet, or they are payments that need a bill.
           </Count>
           <Count label="Not a bill" value={counts.notBill} list={{ review: "not-bill" }}>
             Marked by someone in the household. They are never sent to OurHome.
+          </Count>
+          <Count label="Going to OurHome" value={counts.goesToOurHome}>
+            Checked by someone, or from a biller whose emails are sent automatically.
+          </Count>
+          <Count label="Waiting before OurHome" value={counts.waitsBeforeOurHome}>
+            Each needs someone: to mark it Checked, or to fix its amount; a payment may need its bill chosen, or wait for its bill to go
+            first. Each email's page says which.
+          </Count>
+          <Count label="Payments that need a bill" value={counts.needsBill} list={{ needsBill: true }}>
+            No bill email fits these payments. On each one's page, choose its bill or mark it Paid on its own.
           </Count>
           <Count label="Need a check" value={counts.needsCheck} list={{ needsCheck: true }}>
             The email gives more than one value for something, such as two due dates, and nobody has reviewed it yet.

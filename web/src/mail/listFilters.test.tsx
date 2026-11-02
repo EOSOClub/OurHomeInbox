@@ -14,6 +14,7 @@ import type { Capture } from "../../../src/shared/capture";
 import type { ExtractionSummary } from "../../../src/shared/extraction";
 import { CaptureDetailPage } from "../pages/CaptureDetailPage";
 import { CaptureListPage } from "../pages/CaptureListPage";
+import { HANDOFF_WAITS } from "../testFixtures";
 
 afterEach(() => {
   cleanup();
@@ -89,6 +90,8 @@ function stubServer() {
     picked,
     tags: [],
     review: null,
+    handoff: HANDOFF_WAITS,
+    payment: null,
   });
   const detail = (capture: Capture): CaptureDetailResponse => ({
     id: idOf(capture),
@@ -100,6 +103,8 @@ function stubServer() {
     extraction: extract(capture),
     tags: [],
     review: null,
+    handoff: HANDOFF_WAITS,
+    payment: null,
   });
   vi.stubGlobal(
     "fetch",

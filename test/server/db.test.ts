@@ -22,13 +22,18 @@ describe("openDatabase", () => {
     const tables = db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").map((t) => t.name);
     expect(tables).toEqual([
       "app_state",
+      "biller_clean_checks",
       "biller_rules",
       "biller_senders",
       "billers",
       "capture_reviews",
       "capture_tags",
+      "handoff_connections",
+      "handoff_offers",
       "households",
       "mailboxes",
+      "ourhome_changes",
+      "payment_pairings",
       "sessions",
       "tags",
       "users",

@@ -18,7 +18,8 @@
     "dev:web": "vite",
     "capture": "tsx src/index.ts capture",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "handoff-preview": "tsx src/index.ts handoff-preview"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.5",

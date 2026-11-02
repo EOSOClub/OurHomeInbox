@@ -74,6 +74,8 @@ describe("billers", () => {
       senders: ["billing@citywater.example", "citywater.example", "help@citywater.example"],
       notes: "Paid on the 1st.",
       fetchInvoices: true,
+      autoSend: false,
+      cleanChecks: 0,
       createdAt: "2026-10-29T12:00:00.000Z",
       updatedAt: "2026-10-29T12:00:00.000Z",
     });

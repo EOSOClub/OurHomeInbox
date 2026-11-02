@@ -120,3 +120,6 @@ export const crossSiteCheck: MiddlewareHandler = async (c, next) => {
 
 /** Request bodies are small JSON objects; anything bigger is refused before it is read. */
 export const MAX_BODY_BYTES = 64 * 1024;
+
+/** POST /api/handoff/changes only: 100 changes with Message-IDs at OurHome's longest (998 characters) fit. */
+export const MAX_CHANGES_BODY_BYTES = 128 * 1024;

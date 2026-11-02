@@ -6,7 +6,8 @@
 import type { CaptureListItem, CheckingState, MailboxInfo } from "../../src/shared/api";
 import type { InvoiceOutcome } from "../../src/shared/invoice";
 import { formatDateTime } from "./format";
-import { needsCheckNow } from "./mail/review";
+import { isToReview, needsCheckNow } from "./mail/review";
+import { needsBill } from "./payments/paymentText";
 
 /** Why a mailbox needs someone, or null when it does not. */
 export function mailboxProblem(mailbox: MailboxInfo): string | null {
@@ -53,9 +54,15 @@ export function mailboxState(mailbox: MailboxInfo): { label: string; tone: "ok" 
 export interface EmailCounts {
   total: number;
   bills: number;
-  /** Nobody has marked them checked or not a bill yet. */
+  /** In the Review list: nobody has marked them checked or not a bill yet, or they are payments that need a bill. */
   toReview: number;
   notBill: number;
+  /** Going to OurHome: Checked, or from a biller that sends automatically (shared/handoff.ts). */
+  goesToOurHome: number;
+  /** Waiting for a person before they can go to OurHome. */
+  waitsBeforeOurHome: number;
+  /** Payments no bill fits and nobody chose a bill for (shared/payments.ts). */
+  needsBill: number;
   /** More than one candidate for a value, and not reviewed yet. */
   needsCheck: number;
   pastDue: number;
@@ -67,8 +74,11 @@ export function emailCounts(captures: readonly CaptureListItem[]): EmailCounts {
   return {
     total: captures.length,
     bills: captures.filter((c) => c.picked.kind === "bill").length,
-    toReview: captures.filter((c) => c.review === null).length,
+    toReview: captures.filter(isToReview).length,
     notBill: captures.filter((c) => c.review?.state === "not-bill").length,
+    goesToOurHome: captures.filter((c) => c.handoff.state === "goes").length,
+    waitsBeforeOurHome: captures.filter((c) => c.handoff.state === "waits").length,
+    needsBill: captures.filter(needsBill).length,
     needsCheck: captures.filter(needsCheckNow).length,
     pastDue: captures.filter((c) => c.picked.dueNow).length,
     senderNotVerified: captures.filter((c) => !c.senderVerified).length,

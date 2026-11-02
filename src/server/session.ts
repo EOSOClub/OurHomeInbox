@@ -126,8 +126,20 @@ export function loadSession(deps: SessionDeps): MiddlewareHandler<AppEnv> {
   };
 }
 
-/** The routes anyone may use; everything else under /api needs a signed-in user. */
-const PUBLIC = new Set(["GET /api/health", "GET /api/session", "POST /api/session", "POST /api/setup"]);
+/**
+ * The routes anyone may use; everything else under /api needs a signed-in
+ * user. The hand-off routes are for OurHome, which has no sign-in: they check
+ * its token themselves (handoff/routes.ts) and refuse without one.
+ */
+const PUBLIC = new Set([
+  "GET /api/health",
+  "GET /api/session",
+  "POST /api/session",
+  "POST /api/setup",
+  "GET /api/handoff/hello",
+  "GET /api/handoff/documents",
+  "POST /api/handoff/changes",
+]);
 
 export const requireSignIn: MiddlewareHandler<AppEnv> = async (c, next) => {
   if (c.var.user === null && !PUBLIC.has(`${c.req.method} ${c.req.path}`)) return apiError(c, 401, MESSAGES.signIn);

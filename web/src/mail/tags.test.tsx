@@ -15,6 +15,7 @@ import { tagKey } from "../../../src/shared/tags";
 import { CaptureDetailPage } from "../pages/CaptureDetailPage";
 import { CaptureListPage } from "../pages/CaptureListPage";
 import { TagsPage } from "../pages/TagsPage";
+import { HANDOFF_WAITS } from "../testFixtures";
 
 afterEach(() => {
   cleanup();
@@ -78,6 +79,8 @@ function stubServer(initial: string[] = [], on: Record<string, number[]> = {}, f
     extraction: extract(capture),
     tags: refs(idOf(capture)),
     review: null,
+    handoff: HANDOFF_WAITS,
+    payment: null,
   });
   const item = (capture: Capture): CaptureListItem => ({
     id: idOf(capture),
@@ -99,6 +102,8 @@ function stubServer(initial: string[] = [], on: Record<string, number[]> = {}, f
     picked: { kind: "bill", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false, values: {} },
     tags: refs(idOf(capture)),
     review: null,
+    handoff: HANDOFF_WAITS,
+    payment: null,
   });
 
   vi.stubGlobal(

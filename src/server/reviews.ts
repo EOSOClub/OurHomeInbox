@@ -7,21 +7,29 @@
 // mailboxes can be marked. Any member can mark, as with tags. An email is
 // named by its capture id, so its mark stays with it while its mailbox is
 // removed and comes back when the mailbox is restored.
+//
+// Marking emails Checked also adds to their billers' runs toward Send
+// automatically, and the reply names any biller that has just earned the
+// offer (handoff/trust.ts; owner, 2026-11-01).
 
 import { Hono } from "hono";
 import { z } from "zod";
 import type { CaptureReview, CaptureReviewResponse, SessionUser } from "../shared/api.js";
 import { MAX_REVIEWED_AT_ONCE, REVIEW_STATES, type ReviewState } from "../shared/review.js";
 import type { CaptureStore } from "../store.js";
+import type { CaptureCache } from "./captureCache.js";
 import type { Database } from "./db.js";
 import { apiError, householdOf, jsonBody, MESSAGES, type AppEnv } from "./http.js";
+import { readHouseholdItems } from "./captures.js";
 import { isCapturedIn } from "./mail.js";
 import type { Mailboxes } from "./mailboxes.js";
+import { autoSendOffers, recordChecks, type CheckedEmail } from "./handoff/trust.js";
 
 export interface ReviewDeps {
   db: Database;
   store: CaptureStore;
   mailboxes: Mailboxes;
+  cache: CaptureCache;
   now: () => Date;
 }
 
@@ -69,7 +77,7 @@ export function reviewRoutes(deps: ReviewDeps): Hono<AppEnv> {
   const { db, store, mailboxes, now } = deps;
   const app = new Hono<AppEnv>();
 
-  app.put("/captures/review", jsonBody(reviewSchema), (c) => {
+  app.put("/captures/review", jsonBody(reviewSchema), async (c) => {
     const householdId = householdOf(c);
     const userId = (c.var.user as SessionUser).id;
     const { captureIds, state } = c.req.valid("json");
@@ -77,7 +85,19 @@ export function reviewRoutes(deps: ReviewDeps): Hono<AppEnv> {
     if (!captureIds.every((id) => isCapturedIn(store, id, slugs))) return apiError(c, 404, EMAIL_NOT_FOUND);
     const stamp = now().toISOString();
 
-    db.transaction(() => {
+    // Emails becoming Checked now (not already Checked) count toward their biller's run (handoff/trust.ts).
+    let checked: CheckedEmail[] = [];
+    if (state === "checked") {
+      const before = captureReviews(db, householdId);
+      const newly = captureIds.filter((id) => before.get(id)?.state !== "checked");
+      const items = await readHouseholdItems(deps, householdId, newly);
+      checked = newly.flatMap((id) => {
+        const item = items.get(id);
+        return item?.biller ? [{ captureId: id, billerId: item.biller.id, clean: !item.picked.needsCheck && item.senderVerified }] : [];
+      });
+    }
+
+    const touched = db.transaction(() => {
       for (const captureId of captureIds) {
         if (state === null) {
           db.run("DELETE FROM capture_reviews WHERE household_id = ? AND capture_id = ?", householdId, captureId);
@@ -96,9 +116,13 @@ export function reviewRoutes(deps: ReviewDeps): Hono<AppEnv> {
           );
         }
       }
+      return recordChecks(db, householdId, checked, stamp);
     });
 
-    const body: CaptureReviewResponse = { captures: captureIds.map((id) => ({ id, review: reviewOn(db, householdId, id) })) };
+    const body: CaptureReviewResponse = {
+      captures: captureIds.map((id) => ({ id, review: reviewOn(db, householdId, id) })),
+      offerAutoSend: autoSendOffers(db, householdId, touched),
+    };
     return c.json(body);
   });
 

@@ -1,6 +1,7 @@
 // A captured email as the list has it, for the export tests.
 
 import type { CaptureListItem } from "../../../src/shared/api";
+import { HANDOFF_WAITS } from "../testFixtures";
 
 export function exportItem(id: string, more: Partial<CaptureListItem> = {}): CaptureListItem {
   return {
@@ -24,6 +25,8 @@ export function exportItem(id: string, more: Partial<CaptureListItem> = {}): Cap
     picked: { kind: "bill", amount: "42.10", dueDate: null, paidDate: null, dueNow: false, needsCheck: false, values: { amount: ["42.10"] } },
     tags: [],
     review: null,
+    handoff: HANDOFF_WAITS,
+    payment: null,
     ...more,
   };
 }

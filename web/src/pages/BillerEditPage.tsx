@@ -2,7 +2,8 @@
 // on the change page. A new biller can be started from a captured email:
 // ?name=...&sender=... fill the form in; on the change page ?addSender=...
 // adds an email's sender to the list. Nothing is saved until Save. The change
-// page also lists the biller's rules from Fix, each with Remove.
+// page also lists the biller's rules from Fix, each with Remove, and whether
+// its emails go to OurHome automatically (ourhome/BillerAutoSend.tsx).
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
@@ -27,6 +28,7 @@ import {
 } from "../components/ui";
 import { plural } from "../format";
 import { FIELD_LABELS } from "../mail/picked";
+import { BillerAutoSend } from "../ourhome/BillerAutoSend";
 import { queryKeys, refreshAfterBillerChange, refreshAfterRuleChange, useBiller, useBillerRules } from "../queries";
 import { NotFoundPage } from "./NotFoundPage";
 
@@ -266,6 +268,7 @@ function EditBiller({ biller, addSender }: { biller: Biller; addSender: string |
       ) : null}
       <BillerFormCard initial={initial} submitLabel="Save changes" busy={update.isPending} error={update.error} onSubmit={(input) => update.mutate(input)} />
       <BillerRules biller={biller} />
+      <BillerAutoSend biller={biller} />
       <DeleteBiller biller={biller} />
     </div>
   );

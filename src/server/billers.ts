@@ -3,7 +3,8 @@
 //   GET    /api/billers       every biller, by name
 //   POST   /api/billers       add one
 //   GET    /api/billers/:id   one biller
-//   PUT    /api/billers/:id   change one (the whole biller is sent)
+//   PUT    /api/billers/:id   change one (the whole biller is sent; Send automatically is kept)
+//   PUT    /api/billers/:id/auto-send   turn Send automatically on or off (see handoff/trust.ts)
 //   DELETE /api/billers/:id   remove one
 //
 // Everything is scoped to the signed-in person's household. Another
@@ -24,6 +25,7 @@ import {
 } from "../shared/billers.js";
 import type { Database } from "./db.js";
 import { apiError, householdOf, jsonBody, MESSAGES, type AppEnv } from "./http.js";
+import { setAutoSend } from "./handoff/trust.js";
 
 export interface BillerDeps {
   db: Database;
@@ -69,12 +71,16 @@ const billerSchema = z.object(
 
 type BillerFields = z.output<typeof billerSchema>;
 
+const autoSendSchema = z.object({ autoSend: z.boolean({ error: MESSAGES.badShape }) }, { error: MESSAGES.badShape });
+
 interface BillerRow {
   id: number;
   name: string;
   kind: BillerKind;
   notes: string;
   fetch_invoices: number;
+  auto_send: number;
+  clean_checks: number;
   created_at: string;
   updated_at: string;
 }
@@ -87,12 +93,15 @@ function toBiller(row: BillerRow, senders: string[]): Biller {
     senders,
     notes: row.notes,
     fetchInvoices: row.fetch_invoices !== 0,
+    autoSend: row.auto_send !== 0,
+    cleanChecks: row.clean_checks,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-const BILLER_COLUMNS = "id, name, kind, notes, fetch_invoices, created_at, updated_at";
+const BILLER_COLUMNS = `id, name, kind, notes, fetch_invoices, auto_send,
+  (SELECT count(*) FROM biller_clean_checks c WHERE c.biller_id = billers.id) AS clean_checks, created_at, updated_at`;
 
 export function listBillers(db: Database, householdId: number): Biller[] {
   const rows = db.all<BillerRow>(
@@ -228,6 +237,14 @@ export function billerRoutes(deps: BillerDeps): Hono<AppEnv> {
     });
     if ("missing" in result) return apiError(c, 404, NOT_FOUND);
     if ("problem" in result) return apiError(c, 409, result.problem);
+    return c.json(getBiller(db, householdId, id)!);
+  });
+
+  // Send automatically: turned on from the offer after enough clean checks, or on the biller's page; off is also "Not now".
+  app.put("/billers/:id/auto-send", jsonBody(autoSendSchema), (c) => {
+    const id = billerId(c);
+    const householdId = householdOf(c);
+    if (id === null || !setAutoSend(db, householdId, id, c.req.valid("json").autoSend)) return apiError(c, 404, NOT_FOUND);
     return c.json(getBiller(db, householdId, id)!);
   });
 

@@ -1,7 +1,8 @@
 // The page for one captured email: reads the email's address from the page
 // URL, fetches it, and shows it with CaptureDetailView, with buttons to mark
-// it checked or not a bill (CaptureReviewEditor) and its tags to add and take
-// off (CaptureTagEditor). "Back to captured mail" returns to the
+// it checked or not a bill (CaptureReviewEditor), its tags to add and take
+// off (CaptureTagEditor), and, for a payment, Choose a bill (PaymentEditor).
+// "Back to captured mail" returns to the
 // list with the search and filters it was opened from. Under the details:
 // its biller, or, when no biller matches, buttons to start a biller from the
 // sender or add the sender to one the household already has.
@@ -16,6 +17,7 @@ import { listPathFrom } from "../mail/captureList";
 import { CaptureDetailView } from "../mail/CaptureDetailView";
 import { CaptureTagEditor } from "../mail/CaptureTagEditor";
 import { CaptureReviewEditor } from "../mail/CaptureReview";
+import { PaymentEditor } from "../payments/PaymentLine";
 import { useBillers, useCapture } from "../queries";
 
 const ACTION = "px-3 py-1.5";
@@ -95,6 +97,7 @@ export function CaptureDetailPage() {
           detail={capture.data}
           tags={<CaptureTagEditor detail={capture.data} />}
           review={<CaptureReviewEditor detail={capture.data} />}
+          payment={capture.data.payment ? <PaymentEditor detail={{ ...capture.data, payment: capture.data.payment }} /> : undefined}
           // An email with no biller and no From address has nothing to offer here.
           actions={capture.data.biller || newBillerPathFrom(capture.data.capture.from) ? <BillerActions detail={capture.data} /> : undefined}
         />

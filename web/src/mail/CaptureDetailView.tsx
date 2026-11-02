@@ -1,4 +1,4 @@
-// One captured email: who sent it (and whether that was confirmed), its biller, how it was reviewed, its tags, when, and where it was found,
+// One captured email: who sent it (and whether that was confirmed), its biller, how it was reviewed, which bill it pays (or what pays it), whether it goes to OurHome, its tags, when, and where it was found,
 // what the reader picked out of it, then tabs for each part of what was captured
 // (and the invoice its link gave, when there is one). Takes the API's reply directly, so it
 // can be shown (and tested) without fetching anything.
@@ -13,6 +13,8 @@ import { Tabs, type TabItem } from "../components/Tabs";
 import { formatAddressList, formatDateTime, subjectDisplay } from "../format";
 import { AttachmentsPanel, EmailPanel, HeadersPanel, HtmlSourcePanel, InvoicePanel, LinksPanel, RawPanel, TextPanel } from "./CapturePanels";
 import { PickedOut } from "./PickedOut";
+import { HandoffSummary } from "../ourhome/HandoffLine";
+import { PaymentSummary } from "../payments/PaymentLine";
 import { ReviewSummary } from "./CaptureReview";
 import { TagChips } from "./Tags";
 
@@ -37,17 +39,20 @@ function SenderLine({ check }: { check: SenderCheck }) {
  * `actions` go under the email's details, for the page to add buttons that need its router.
  * `tags` replaces the plain list of its tags, for the page to add the tag editor (which needs the server).
  * `review` replaces the plain line saying how it was reviewed, for the page to add the buttons that mark it.
+ * `payment` replaces the plain line about which bill a payment pays (or what pays a bill), for the page to add links and Choose a bill.
  */
 export function CaptureDetailView({
   detail,
   actions,
   tags,
   review,
+  payment,
 }: {
   detail: CaptureDetailResponse;
   actions?: ReactNode;
   tags?: ReactNode;
   review?: ReactNode;
+  payment?: ReactNode;
 }) {
   const { id, capture, extraction } = detail;
   const { invoice } = detail;
@@ -89,6 +94,10 @@ export function CaptureDetailView({
             )}
           </DetailRow>
           <DetailRow label="Review">{review ?? <ReviewSummary review={detail.review} />}</DetailRow>
+          {detail.payment ? <DetailRow label="Payment">{payment ?? <PaymentSummary payment={detail.payment} />}</DetailRow> : null}
+          <DetailRow label="OurHome">
+            <HandoffSummary handoff={detail.handoff} />
+          </DetailRow>
           <DetailRow label="Tags">
             {tags ?? (detail.tags.length ? <TagChips tags={detail.tags} /> : <span className="text-muted">None</span>)}
           </DetailRow>

@@ -1,6 +1,7 @@
 // Review on the pages: the badge a row shows for a marked email, the line on
 // an email's page saying who marked it and when, and the buttons there to mark
-// it checked or not a bill, or back to review.
+// it checked or not a bill, or back to review. Marking one Checked can complete
+// its biller's run, and then Send automatically is offered (ourhome/AutoSendOffer.tsx).
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, CircleSlash } from "lucide-react";
@@ -9,6 +10,7 @@ import type { CaptureDetailResponse, CaptureReview } from "../../../src/shared/a
 import type { ReviewState } from "../../../src/shared/review";
 import { api } from "../api";
 import { Button, Notice } from "../components/ui";
+import { useAutoSendOffer } from "../ourhome/AutoSendOffer";
 import { showReviews } from "../queries";
 import { REVIEW_LABELS, reviewLine } from "./review";
 
@@ -58,11 +60,13 @@ const ACTION = "px-3 py-1";
 export function CaptureReviewEditor({ detail }: { detail: CaptureDetailResponse }) {
   const queryClient = useQueryClient();
   const [done, setDone] = useState("");
+  const autoSend = useAutoSendOffer();
   const change = useMutation({
     mutationFn: (state: ReviewState | null) => api.reviewCaptures({ captureIds: [detail.id], state }),
     onSuccess: (result, state) => {
       showReviews(queryClient, result);
       setDone(state === null ? "Marked to review." : `Marked ${REVIEW_LABELS[state].toLowerCase()}.`);
+      autoSend.offer(result.offerAutoSend);
     },
   });
   const state = detail.review?.state ?? null;
@@ -105,6 +109,8 @@ export function CaptureReviewEditor({ detail }: { detail: CaptureDetailResponse 
       <p role="status" className="sr-only">
         {change.isError ? "" : done}
       </p>
+      {autoSend.message ? <p className="text-sm text-muted">{autoSend.message}</p> : null}
+      {autoSend.dialog}
     </div>
   );
 }

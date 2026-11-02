@@ -78,7 +78,7 @@ describe("reviewing emails", () => {
     const res = await mark({ captureIds: [WATER, POWER], state: "checked" });
     expect(res.status).toBe(200);
     const review = { state: "checked", by: ADMIN.name, at: FIRST };
-    expect(await json<CaptureReviewResponse>(res)).toEqual({ captures: [{ id: WATER, review }, { id: POWER, review }] });
+    expect(await json<CaptureReviewResponse>(res)).toEqual({ captures: [{ id: WATER, review }, { id: POWER, review }], offerAutoSend: [] });
     expect(await listed()).toEqual({ "Water bill": review, "Power bill": review });
     expect((await json<CaptureDetailResponse>(await get(`/api/captures/${WATER}`))).review).toEqual(review);
   });
@@ -107,7 +107,7 @@ describe("reviewing emails", () => {
   it("clears a mark, so the email needs a look again", async () => {
     await mark({ captureIds: [WATER, POWER], state: "not-bill" });
     const res = await mark({ captureIds: [WATER], state: null });
-    expect(await json<CaptureReviewResponse>(res)).toEqual({ captures: [{ id: WATER, review: null }] });
+    expect(await json<CaptureReviewResponse>(res)).toEqual({ captures: [{ id: WATER, review: null }], offerAutoSend: [] });
     expect(await listed()).toEqual({ "Water bill": null, "Power bill": { state: "not-bill", by: ADMIN.name, at: FIRST } });
     // Clearing one with no mark is fine.
     expect((await mark({ captureIds: [WATER], state: null })).status).toBe(200);

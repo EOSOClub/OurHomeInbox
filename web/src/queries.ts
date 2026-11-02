@@ -12,6 +12,7 @@ export const queryKeys = {
   capture: (id: string) => ["captures", id] as const,
   // Under the email, so whatever refreshes the email refreshes these too.
   choices: (id: string, field: FieldName) => ["captures", id, "choices", field] as const,
+  billChoices: (id: string, all: boolean) => ["captures", id, "bill-choices", all] as const,
   settings: ["settings"] as const,
   mailboxes: ["mailboxes"] as const,
   status: ["status"] as const,
@@ -20,6 +21,7 @@ export const queryKeys = {
   billerRules: (id: number) => ["billers", id, "rules"] as const,
   tags: ["tags"] as const,
   users: ["users"] as const,
+  ourhome: ["ourhome"] as const,
 };
 
 /** Every biller's rules list, whichever biller. */
@@ -120,12 +122,42 @@ export function useChoices(id: string, field: FieldName) {
   return useQuery({ queryKey: queryKeys.choices(id, field), queryFn: ({ signal }) => api.getChoices(id, field, signal), staleTime: 0 });
 }
 
+/** The bills a payment's picker lists. Fetched fresh each time the picker opens, as other payments may have changed. */
+export function useBillChoices(id: string, all: boolean) {
+  return useQuery({ queryKey: queryKeys.billChoices(id, all), queryFn: ({ signal }) => api.getBillChoices(id, all, signal), staleTime: 0 });
+}
+
+/**
+ * After a payment's bill is chosen (or the choice cleared): every email,
+ * since the payment, the bill it left and the bill it took all change, and so
+ * do their lines about OurHome and the counts on Status.
+ */
+export function refreshAfterPairing(client: QueryClient): void {
+  void client.invalidateQueries({ queryKey: queryKeys.captures });
+}
+
 export function useBillerRules(id: number) {
   return useQuery({ queryKey: queryKeys.billerRules(id), queryFn: ({ signal }) => api.getBillerRules(id, signal) });
 }
 
 export function useTags() {
   return useQuery({ queryKey: queryKeys.tags, queryFn: ({ signal }) => api.listTags(signal) });
+}
+
+export function useOurHome() {
+  return useQuery({ queryKey: queryKeys.ourhome, queryFn: ({ signal }) => api.getOurHome(signal) });
+}
+
+/** After the OurHome connection changes: it, and every email's line about OurHome. */
+export function refreshAfterOurHomeChange(client: QueryClient): void {
+  void client.invalidateQueries({ queryKey: queryKeys.ourhome });
+  void client.invalidateQueries({ queryKey: queryKeys.captures });
+}
+
+/** After a biller's Send automatically changes: the billers, and every email's line about OurHome. */
+export function refreshAfterAutoSend(client: QueryClient): void {
+  void client.invalidateQueries({ queryKey: queryKeys.billers });
+  void client.invalidateQueries({ queryKey: queryKeys.captures });
 }
 
 export function useUsers() {
@@ -157,5 +189,7 @@ export function showReviews(client: QueryClient, result: CaptureReviewResponse):
   for (const [id, review] of now) {
     client.setQueryData<CaptureDetailResponse>(queryKeys.capture(id), (old) => (old ? { ...old, review } : old));
   }
+  // Each email's line about OurHome follows its mark; a biller's run toward Send automatically may have moved.
   void client.invalidateQueries({ queryKey: queryKeys.captures });
+  void client.invalidateQueries({ queryKey: queryKeys.billers });
 }

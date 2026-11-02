@@ -3,7 +3,7 @@
 // buttons to show only emails with or without a biller, a choice of tag, a
 // shortcut to the emails still to review, and behind "Filters" the kind of
 // email, how it was reviewed, a range of days and ticks for "Needs a check",
-// "Past due" and "Sender not verified" (all in the browser; the search and
+// "Past due", "Sender not verified" and "Needs a bill" (all in the browser; the search and
 // every filter are in the page address, so Back from an email or a link opens
 // the list the same way). Each row opens that email. Select turns the rows
 // into checkboxes, to mark several emails at once (checked, not a bill, or to
@@ -40,7 +40,9 @@ import {
 import { KIND_LABELS, summaryLine } from "../mail/picked";
 import { ReviewBadge } from "../mail/CaptureReview";
 import { downloadExport, EXPORT_FORMAT_LABELS, EXPORT_FORMATS, type ExportFormat } from "../mail/exportFile";
-import { needsCheckNow, REVIEW_LABELS } from "../mail/review";
+import { useAutoSendOffer } from "../ourhome/AutoSendOffer";
+import { isToReview, needsCheckNow, REVIEW_LABELS } from "../mail/review";
+import { needsBill } from "../payments/paymentText";
 import { TagAdder, TagChips } from "../mail/Tags";
 import { queryKeys, refreshAfterTagChange, showReviews, useCaptures, useMailboxes, useTags } from "../queries";
 
@@ -67,6 +69,7 @@ function PickedLine({ item }: { item: CaptureListItem }) {
       {line ? <span className="font-medium">{line}</span> : <span className="text-muted">Nothing picked out</span>}
       <ReviewBadge review={review} />
       {needsCheckNow(item) ? <span className="font-medium text-warn">Needs a check</span> : null}
+      {needsBill(item) ? <span className="font-medium text-warn">Needs a bill</span> : null}
       {senderVerified ? null : <span className="font-medium text-warn">Sender not verified</span>}
     </p>
   );
@@ -266,9 +269,13 @@ function SelectionBar({
       refreshAfterTagChange(queryClient);
     },
   });
+  const autoSend = useAutoSendOffer();
   const review = useMutation({
     mutationFn: (body: CaptureReviewRequest) => api.reviewCaptures(body),
-    onSuccess: (result) => showReviews(queryClient, result),
+    onSuccess: (result) => {
+      showReviews(queryClient, result);
+      autoSend.offer(result.offerAutoSend);
+    },
   });
 
   const chosen = all.filter((item) => selected.has(item.id));
@@ -414,6 +421,8 @@ function SelectionBar({
       <p role="status" className={done && !problem ? "text-sm text-muted" : "sr-only"}>
         {problem ? "" : (done ?? "")}
       </p>
+      {autoSend.message ? <p className="text-sm text-muted">{autoSend.message}</p> : null}
+      {autoSend.dialog}
     </section>
   );
 }
@@ -540,6 +549,7 @@ function MoreFilters({ id, filters, onChange }: { id: string; filters: CaptureFi
         <FilterTick label="Needs a check" checked={filters.needsCheck} onChange={(needsCheck) => onChange({ needsCheck })} />
         <FilterTick label="Past due" checked={filters.pastDue} onChange={(pastDue) => onChange({ pastDue })} />
         <FilterTick label="Sender not verified" checked={filters.unverified} onChange={(unverified) => onChange({ unverified })} />
+        <FilterTick label="Needs a bill" checked={filters.needsBill} onChange={(needsBill) => onChange({ needsBill })} />
       </div>
     </section>
   );
@@ -574,16 +584,16 @@ export function CaptureListPage() {
     tags?.map((tag) => tag.id),
   );
   const fromList: FromList = { listSearch: listSearch ? `?${listSearch}` : "" };
-  const { query, billers: billerFilter, tag: tagFilter, kind, from, to, review, needsCheck, pastDue, unverified } = filters;
+  const { query, billers: billerFilter, tag: tagFilter, kind, from, to, review, needsCheck, pastDue, unverified, needsBill: billNeeded } = filters;
   const moreOn = moreFiltersOn(filters);
   // Open at first when the address already asks for one of its filters.
   const [moreOpen, setMoreOpen] = useState(moreOn > 0);
   // By value: filters is a new object on every render.
   const shown = useMemo(
-    () => (all ? filterCaptures(all, { query, billers: billerFilter, tag: tagFilter, kind, from, to, review, needsCheck, pastDue, unverified }) : []),
-    [all, query, billerFilter, tagFilter, kind, from, to, review, needsCheck, pastDue, unverified],
+    () => (all ? filterCaptures(all, { query, billers: billerFilter, tag: tagFilter, kind, from, to, review, needsCheck, pastDue, unverified, needsBill: billNeeded }) : []),
+    [all, query, billerFilter, tagFilter, kind, from, to, review, needsCheck, pastDue, unverified, billNeeded],
   );
-  const toReview = all ? all.filter((item) => item.review === null).length : 0;
+  const toReview = all ? all.filter(isToReview).length : 0;
   const narrowed = isNarrowed(filters);
   const filteredTag = typeof tagFilter === "number" ? tags?.find((tag) => tag.id === tagFilter) : undefined;
 

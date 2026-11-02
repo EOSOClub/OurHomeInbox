@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { BillerMatch, CaptureListItem, TagRef } from "../../../src/shared/api";
+import { HANDOFF_WAITS } from "../testFixtures";
 import {
   captureDate,
   filterCaptures,
@@ -47,6 +48,8 @@ function item(
     picked: { kind: "statement", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: false, values: {} },
     tags,
     review: null,
+    handoff: HANDOFF_WAITS,
+    payment: null,
     ...more,
   };
 }
@@ -142,6 +145,24 @@ describe("filterCaptures", () => {
     expect(filterCaptures(varied, { pastDue: true, needsCheck: true })).toEqual([]);
   });
 
+  it("narrows to payments that need a bill", () => {
+    const waiting = item("waiting", "Payment received", "E", "e@x.example", undefined, null, [], {
+      picked: picked({ kind: "receipt" }),
+      payment: { role: "payment", bill: null, how: null, paidLate: false, needsBill: true, staleChoice: false, locked: false },
+    });
+    const paired = item("paired", "Payment received", "F", "f@x.example", undefined, null, [], {
+      picked: picked({ kind: "receipt" }),
+      payment: { role: "payment", bill: { id: "bill", date: "2026-10-05T09:00:00Z", amount: 10 }, how: "auto", paidLate: false, needsBill: false, staleChoice: false, locked: false },
+    });
+    expect(ids(filterCaptures([...varied, waiting, paired], { needsBill: true }))).toEqual(["waiting"]);
+    // In the Review list even once marked Checked: marking it does not choose its bill.
+    const checked = { state: "checked" as const, by: "Sam", at: "2026-10-30T12:00:00Z" };
+    const marked = [{ ...waiting, review: checked }, { ...paired, review: checked }];
+    expect(ids(filterCaptures(marked, { review: "todo" }))).toEqual(["waiting"]);
+    expect(moreFiltersOn({ ...NO_FILTERS, needsBill: true })).toBe(1);
+    expect(withFilters(new URLSearchParams(), { needsBill: true }).toString()).toBe("needsbill=1");
+  });
+
   it("narrows to a range of days, both ends included, by the date the row shows", () => {
     expect(ids(filterCaptures(varied, { from: "2026-10-10" }))).toEqual(["late", "check", "stranger"]);
     expect(ids(filterCaptures(varied, { to: "2026-10-10" }))).toEqual(["bill", "late"]);
@@ -214,7 +235,7 @@ describe("tagFilterFrom", () => {
 
 describe("the filters in the page address", () => {
   it("reads every filter", () => {
-    const params = new URLSearchParams("q=water+bill&biller=matched&tag=2&kind=reminder&from=2026-10-01&to=2026-10-31&review=todo&check=1&pastdue=1&unverified=1");
+    const params = new URLSearchParams("q=water+bill&biller=matched&tag=2&kind=reminder&from=2026-10-01&to=2026-10-31&review=todo&check=1&pastdue=1&unverified=1&needsbill=1");
     expect(filtersFrom(params, [1, 2])).toEqual({
       query: "water bill",
       billers: "matched",
@@ -226,6 +247,7 @@ describe("the filters in the page address", () => {
       needsCheck: true,
       pastDue: true,
       unverified: true,
+      needsBill: true,
     });
     expect(filtersFrom(new URLSearchParams(), [1, 2])).toEqual(NO_FILTERS);
   });

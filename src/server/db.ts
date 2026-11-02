@@ -162,6 +162,77 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (household_id, capture_id)
   );
   `,
+  // The hand-off to OurHome (see handoff/routes.ts and the vault's "Hand-off" note).
+  // - handoff_connections: a household's token for OurHome (only its SHA-256;
+  //   NULL once revoked), the start date, and how far OurHome has read.
+  // - handoff_offers: what was last offered to OurHome about each email, with
+  //   a number that rises with every offer, so OurHome asks for what changed.
+  // - billers.auto_send: Send automatically, earned by Checked emails.
+  // - biller_clean_checks: the biller's current run of Checked emails that
+  //   needed no fix; emptied when the run breaks.
+  `
+  CREATE TABLE handoff_connections (
+    household_id integer PRIMARY KEY REFERENCES households(id),
+    token_hash text UNIQUE,
+    start_date text NOT NULL,
+    token_created_at text,
+    token_created_by integer REFERENCES users(id) ON DELETE SET NULL,
+    last_used_at text,
+    taken_up_to integer NOT NULL DEFAULT 0
+  );
+  CREATE TABLE handoff_offers (
+    household_id integer NOT NULL REFERENCES households(id),
+    capture_id text NOT NULL,
+    number integer NOT NULL,
+    status text NOT NULL CHECK (status IN ('ready', 'withdrawn')),
+    message_id text NOT NULL,
+    fingerprint text NOT NULL,
+    document text,
+    reason text,
+    offered_at text NOT NULL,
+    PRIMARY KEY (household_id, capture_id)
+  );
+  CREATE UNIQUE INDEX handoff_offers_number ON handoff_offers(household_id, number);
+  ALTER TABLE billers ADD COLUMN auto_send integer NOT NULL DEFAULT 0;
+  CREATE TABLE biller_clean_checks (
+    biller_id integer NOT NULL REFERENCES billers(id) ON DELETE CASCADE,
+    household_id integer NOT NULL REFERENCES households(id),
+    capture_id text NOT NULL,
+    checked_at text NOT NULL,
+    PRIMARY KEY (biller_id, capture_id)
+  );
+  `,
+  // Payment pairing (see payments/ and the vault's "Hand-off" note, section 7).
+  // - payment_pairings: one row per payment email that is not left to
+  //   OurHomeInbox: a person's pick of a bill ('person'), Paid on its own
+  //   ('own', no bill), or the pairing as it was when the payment was first
+  //   sent to OurHome ('locked', with the bill or none; never changes again).
+  //   An automatic pairing that has not been sent has no row: it is worked
+  //   out on read. chosen_by is who chose it (NULL for an automatic one).
+  // - ourhome_changes: what OurHome reported a person did to an email bill
+  //   there (paid by hand, removed), by the bill's Message-ID as offered.
+  `
+  CREATE TABLE payment_pairings (
+    household_id integer NOT NULL REFERENCES households(id),
+    payment_id text NOT NULL,
+    bill_id text,
+    how text NOT NULL CHECK (how IN ('person', 'own', 'locked')),
+    chosen_by integer REFERENCES users(id) ON DELETE SET NULL,
+    chosen_at text NOT NULL,
+    PRIMARY KEY (household_id, payment_id),
+    CHECK (how <> 'person' OR bill_id IS NOT NULL),
+    CHECK (how <> 'own' OR bill_id IS NULL)
+  );
+  CREATE INDEX payment_pairings_bill ON payment_pairings(household_id, bill_id);
+  CREATE TABLE ourhome_changes (
+    household_id integer NOT NULL REFERENCES households(id),
+    message_id text NOT NULL,
+    change text NOT NULL CHECK (change IN ('paid', 'removed')),
+    at text NOT NULL,
+    received_at text NOT NULL,
+    PRIMARY KEY (household_id, message_id, change)
+  );
+  `,
 ];
 
 /** The schema version this code expects. */

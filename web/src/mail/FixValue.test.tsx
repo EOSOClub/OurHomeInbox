@@ -15,6 +15,7 @@ import type { Capture } from "../../../src/shared/capture";
 import type { BillerRule, FieldName } from "../../../src/shared/extraction";
 import { EditBillerPage } from "../pages/BillerEditPage";
 import { CaptureDetailView } from "./CaptureDetailView";
+import { HANDOFF_WAITS } from "../testFixtures";
 
 afterEach(() => {
   cleanup();
@@ -97,6 +98,8 @@ function showEmail(capture: Capture, biller: BillerMatch | null = BILLER, rules:
     extraction: extract(capture, rules),
     tags: [],
     review: null,
+    handoff: HANDOFF_WAITS,
+    payment: null,
   };
   render(withQueries(<CaptureDetailView detail={detail} />));
   return screen.getByRole("region", { name: "Picked out" });
@@ -184,6 +187,8 @@ describe("the rules on a biller's page", () => {
     senders: ["xcelenergy.com"],
     notes: "",
     fetchInvoices: true,
+    autoSend: false,
+    cleanChecks: 0,
     createdAt: "2026-10-29T00:00:00.000Z",
     updatedAt: "2026-10-29T00:00:00.000Z",
   };

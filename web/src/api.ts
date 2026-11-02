@@ -40,6 +40,8 @@ import type {
   UserUpdate,
 } from "../../src/shared/api";
 import type { FieldName } from "../../src/shared/extraction";
+import type { AutoSendRequest, OurHomeConnection, OurHomeConnectionUpdate, OurHomeTokenRequest, OurHomeTokenResponse } from "../../src/shared/handoff";
+import type { BillChoicesResponse, PairingRequest, PairingResponse } from "../../src/shared/payments";
 
 export class ApiRequestError extends Error {
   /** The HTTP status, or 0 when the server could not be reached. */
@@ -176,4 +178,12 @@ export const api = {
   updateUser: (id: number, body: UserUpdate) => request<HouseholdUser>("PUT", `/api/users/${id}`, { body }),
   setUserPassword: (id: number, body: UserPasswordRequest) => request<void>("PUT", `/api/users/${id}/password`, { body }),
   removeUser: (id: number) => request<void>("DELETE", `/api/users/${id}`),
+  setAutoSend: (billerId: number, body: AutoSendRequest) => request<Biller>("PUT", `/api/billers/${billerId}/auto-send`, { body }),
+  getOurHome: (signal?: AbortSignal) => request<OurHomeConnection>("GET", "/api/ourhome", { signal }),
+  makeOurHomeToken: (body: OurHomeTokenRequest) => request<OurHomeTokenResponse>("POST", "/api/ourhome/token", { body }),
+  revokeOurHomeToken: () => request<OurHomeConnection>("DELETE", "/api/ourhome/token"),
+  updateOurHome: (body: OurHomeConnectionUpdate) => request<OurHomeConnection>("PUT", "/api/ourhome", { body }),
+  getBillChoices: (id: string, all: boolean, signal?: AbortSignal) =>
+    request<BillChoicesResponse>("GET", `${captureApiPath(id)}/bill-choices${all ? "?all=1" : ""}`, { signal }),
+  setPairing: (id: string, body: PairingRequest) => request<PairingResponse>("PUT", `${captureApiPath(id)}/pairing`, { body }),
 };

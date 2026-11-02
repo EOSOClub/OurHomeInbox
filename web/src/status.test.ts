@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { CaptureListItem, CheckingState, MailboxInfo } from "../../src/shared/api";
 import { anyMailboxProblem, attention, emailCounts, mailboxProblem, mailboxState, readingProblem } from "./status";
+import { HANDOFF_WAITS } from "./testFixtures";
 
 const working: MailboxInfo = {
   id: 1,
@@ -68,14 +69,32 @@ describe("emailCounts", () => {
       biller: { id: 1, name: "WM", kind: "bill", matchedOn: "wm.com" },
       picked: { kind: "bill", amount: "60.00", dueDate: null, paidDate: null, dueNow: false, needsCheck: false, values: { amount: ["60.00"] } },
       review: null,
+      handoff: HANDOFF_WAITS,
+      payment: null,
     } as unknown as CaptureListItem;
     const list = [
       base,
-      { ...base, picked: { ...base.picked, dueNow: true } },
-      { ...base, picked: { ...base.picked, kind: "receipt", needsCheck: true } },
+      { ...base, picked: { ...base.picked, dueNow: true }, handoff: { ...HANDOFF_WAITS, state: "goes", reason: "Sent automatically: WM's emails need no check." } },
+      {
+        ...base,
+        picked: { ...base.picked, kind: "receipt", needsCheck: true },
+        payment: { role: "payment", bill: null, how: null, paidLate: false, needsBill: true, staleChoice: false, locked: false },
+      },
       { ...base, senderVerified: false, biller: null },
     ] as CaptureListItem[];
-    expect(emailCounts(list)).toEqual({ total: 4, bills: 3, toReview: 4, notBill: 0, needsCheck: 1, pastDue: 1, senderNotVerified: 1, noBiller: 1 });
+    expect(emailCounts(list)).toEqual({
+      total: 4,
+      bills: 3,
+      toReview: 4,
+      notBill: 0,
+      goesToOurHome: 1,
+      waitsBeforeOurHome: 3,
+      needsBill: 1,
+      needsCheck: 1,
+      pastDue: 1,
+      senderNotVerified: 1,
+      noBiller: 1,
+    });
   });
 
   it("counts what is still to review, and drops a reviewed email from Need a check", () => {
@@ -84,6 +103,8 @@ describe("emailCounts", () => {
       biller: null,
       picked: { kind: "bill", amount: null, dueDate: null, paidDate: null, dueNow: false, needsCheck: true, values: {} },
       review: null,
+      handoff: HANDOFF_WAITS,
+      payment: null,
     } as unknown as CaptureListItem;
     const list = [
       base,
