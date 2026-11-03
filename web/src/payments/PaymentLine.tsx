@@ -1,15 +1,17 @@
 // Pairing on an email's page (the vault's "Hand-off" note, section 7). On a
-// payment: "Pays the Oct 6 bill", "Paid late" when so, or "Needs a bill", and
+// payment: "Pays the Oct 6 bill", "Paid late" when so, "Needs a bill" (with
+// the payment it may repeat, when there is one), or "Same payment as" another
+// payment email (a second email about it, never sent), and
 // Choose a bill (the picker, BillPicker.tsx) until it has been sent to
 // OurHome. On a bill: "Paid by the Oct 28 payment", or what OurHome reported a
 // person did to it there. PaymentSummary is the plain version for the email's
 // view on its own (no links, no buttons); PaymentEditor is the page's.
 
-import { CircleCheck, Clock, Link2, Lock } from "lucide-react";
+import { CircleCheck, Clock, Copy, Link2, Lock } from "lucide-react";
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import type { CaptureDetailResponse } from "../../../src/shared/api";
-import type { BillSide, PaymentInfo, PaymentSide } from "../../../src/shared/payments";
+import type { BillSide, PaymentInfo, PaymentRef, PaymentSide } from "../../../src/shared/payments";
 import { capturePagePath } from "../api";
 import { Button } from "../components/ui";
 import { BillPicker } from "./BillPicker";
@@ -26,7 +28,28 @@ const linkRef: EmailRef = (id, text, label) => (
   </Link>
 );
 
+/** Another payment email: "the Jul 11 Waste Management payment", as a link on the page. */
+function paymentRef(ref: PaymentRef, emailRef: EmailRef): ReactNode {
+  const day = formatShortDate(ref.date);
+  const what = ref.biller ? `${day} ${ref.biller} payment` : `${day} payment`;
+  return emailRef(ref.id, `the ${what}`, `Open the ${what}`);
+}
+
 function PaymentLines({ payment, emailRef }: { payment: PaymentSide; emailRef: EmailRef }) {
+  if (payment.duplicateOf) {
+    return (
+      <>
+        <span className="flex items-center gap-1.5 font-medium">
+          <Copy aria-hidden className="size-4 shrink-0 text-accent" />
+          <span>Same payment as {paymentRef(payment.duplicateOf, emailRef)}</span>
+        </span>
+        <span className="block text-sm text-muted">
+          A second email about that payment, so it is not sent to OurHome and the payment counts once. If it is a separate payment, choose its bill
+          or mark it Paid on its own.
+        </span>
+      </>
+    );
+  }
   if (payment.needsBill) {
     return (
       <>
@@ -39,6 +62,11 @@ function PaymentLines({ payment, emailRef }: { payment: PaymentSide; emailRef: E
             ? "The bill chosen for this payment can no longer be used. Choose another."
             : "No bill email fits this payment. Choose its bill, or mark it Paid on its own."}
         </span>
+        {payment.maybeDuplicateOf && !payment.staleChoice ? (
+          <span className="block text-sm text-muted">
+            It may be a second email about {paymentRef(payment.maybeDuplicateOf, emailRef)}: if so, mark it Not a bill.
+          </span>
+        ) : null}
       </>
     );
   }

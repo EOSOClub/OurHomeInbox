@@ -26,10 +26,29 @@
 //   Days are the sender's own days (the offset in the email's Date header),
 //   as paid dates are printed; UTC days only when the header gives no offset.
 //
+// Second emails about one payment (owner, 2026-11-02): a biller's own payment
+// confirmation and a payment service's receipt for the same payment (PayPal's
+// "Waste Management Nat...: $57.39 USD"), or a biller confirming twice. Last,
+// after the automatic pairing, in date order: a payment that still needs a
+// bill and that nobody chose a bill for is a duplicate of another payment (the
+// original) with a biller, the same amount in cents, and payment days at most
+// DUPLICATE_DAYS apart, when either
+//   - both have the same biller, and the original has a bill (or Paid on its
+//     own, or is locked) or is the older of the two; or
+//   - it has no biller and its subject or From name names the original's
+//     biller (the name's first NAME_KEY characters, from the start of a word,
+//     since PayPal cuts long names short).
+// The original is one that has its bill first, then the nearest day, then the
+// oldest; a duplicate is never an original. A duplicate is never sent, so
+// OurHome counts the payment once. A person overrides it by choosing a bill or
+// Paid on its own; a locked payment was sent already and is never one.
+// A payment with no biller that matches only on amount and days is left
+// needing a bill, with that payment named as a maybe (a person decides).
+//
 // Pure: no database, no files, so every rule is tested directly.
 
 import type { EmailKind, FieldName } from "../../shared/extraction.js";
-import { FEE_FLOOR_CENTS, FEE_PERCENT, type PairingHow } from "../../shared/payments.js";
+import { DUPLICATE_DAYS, FEE_FLOOR_CENTS, FEE_PERCENT, type PairingHow } from "../../shared/payments.js";
 import { isoDay, type BaseItem } from "../handoff/rules.js";
 
 /** One email as pairing sees it. */
@@ -37,6 +56,10 @@ export interface PairingEmail {
   id: string;
   kind: EmailKind;
   billerId: number | null;
+  /** The biller's name, or null. */
+  billerName: string | null;
+  /** Its subject and first From name, lower case, spaces collapsed: where a payment service's receipt names the biller. */
+  names: string;
   /** The one amount picked out, in cents; null when there is none, more than one, or it is not money. */
   amountCents: number | null;
   notBill: boolean;
@@ -89,6 +112,10 @@ export interface PaymentPairing {
   beforeStart: boolean;
   /** A person chose a bill that can no longer be used, so it needs a bill again. */
   staleChoice: boolean;
+  /** A second email about this payment's original (its id): never sent. Then billId and how are null and needsBill is false. */
+  duplicateOf: string | null;
+  /** While it needs a bill: the payment it may repeat (its id), matching on amount and days only. */
+  maybeDuplicateOf: string | null;
 }
 
 export interface PairingResult {
@@ -152,6 +179,8 @@ export function pairingEmail(item: BaseItem, dateHeader: string | null = null): 
     id: item.id,
     kind: item.picked.kind,
     billerId: item.biller?.id ?? null,
+    billerName: item.biller?.name ?? null,
+    names: plainWords(`${item.subject ?? ""} ${item.from[0]?.name ?? ""}`),
     amountCents: Number.isFinite(amount) ? Math.round(amount * 100) : null,
     notBill: item.review?.state === "not-bill",
     emailTime,
@@ -159,6 +188,31 @@ export function pairingEmail(item: BaseItem, dateHeader: string | null = null): 
     paidDay: paid && DAY.test(paid) ? paid : null,
     dueDay: due && DAY.test(due) ? due : null,
   };
+}
+
+/** How much of a biller's name a payment service's receipt must show: PayPal cuts "Waste Management National Services" to "Waste Management Nat...". */
+export const NAME_KEY = 12;
+
+/** Lower case, with runs of spaces (non-breaking ones too) made one space. */
+function plainWords(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** Whether `names` (a subject and From name, as PairingEmail keeps them) names the biller: its first NAME_KEY characters, from the start of a word. */
+export function namesBiller(names: string, billerName: string | null): boolean {
+  const key = billerName ? plainWords(billerName).slice(0, NAME_KEY).trim() : "";
+  if (key === "") return false;
+  let at = names.indexOf(key);
+  while (at !== -1) {
+    if (at === 0 || !/[\p{L}\p{N}]/u.test(names[at - 1]!)) return true;
+    at = names.indexOf(key, at + 1);
+  }
+  return false;
+}
+
+/** Whole days between two days ("2026-10-06"), either way round. */
+function daysApart(a: string, b: string): number {
+  return Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86_400_000;
 }
 
 /** A receipt with an amount that is not a credit, not marked Not a bill. */
@@ -230,6 +284,8 @@ export function pairPayments(input: PairingInput): PairingResult {
       billMissing,
       beforeStart,
       staleChoice,
+      duplicateOf: null,
+      maybeDuplicateOf: null,
     });
   };
 
@@ -283,5 +339,41 @@ export function pairPayments(input: PairingInput): PairingResult {
     if (bill) settle(payment, bill, "auto", false);
     else settle(payment, null, null, false);
   }
+
+  markDuplicates(payments, fixed, result);
   return result;
+}
+
+/** Last: payments that still need a bill and that nobody chose one for, checked for repeating another payment (see the top). */
+function markDuplicates(payments: readonly PairingEmail[], fixed: ReadonlyMap<string, FixedPairing>, result: PairingResult): void {
+  const pairingOf = (email: PairingEmail) => result.payments.get(email.id)!;
+  const hasBill = (email: PairingEmail) => !pairingOf(email).needsBill;
+  const waiting = payments.filter((payment) => pairingOf(payment).needsBill && !fixed.has(payment.id)).sort(byAge);
+  for (const payment of waiting) {
+    const day = paymentDay(payment);
+    const near = payments.filter(
+      (other) =>
+        other.id !== payment.id &&
+        other.billerId !== null &&
+        pairingOf(other).duplicateOf === null &&
+        other.amountCents === payment.amountCents &&
+        daysApart(paymentDay(other), day) <= DUPLICATE_DAYS,
+    );
+    const best = (a: PairingEmail, b: PairingEmail) =>
+      Number(hasBill(b)) - Number(hasBill(a)) || daysApart(paymentDay(a), day) - daysApart(paymentDay(b), day) || byAge(a, b);
+    const original = near
+      .filter((other) =>
+        payment.billerId !== null
+          ? other.billerId === payment.billerId && (hasBill(other) || byAge(other, payment) < 0)
+          : namesBiller(payment.names, other.billerName),
+      )
+      .sort(best)[0];
+    if (original) {
+      result.payments.set(payment.id, { ...pairingOf(payment), needsBill: false, duplicateOf: original.id });
+      continue;
+    }
+    // A payment service's receipt that does not name the biller (a debit card purchase, say): only a maybe.
+    const maybe = payment.billerId === null ? near.sort(best)[0] : undefined;
+    if (maybe) result.payments.set(payment.id, { ...pairingOf(payment), maybeDuplicateOf: maybe.id });
+  }
 }

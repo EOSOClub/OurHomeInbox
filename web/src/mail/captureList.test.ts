@@ -148,11 +148,11 @@ describe("filterCaptures", () => {
   it("narrows to payments that need a bill", () => {
     const waiting = item("waiting", "Payment received", "E", "e@x.example", undefined, null, [], {
       picked: picked({ kind: "receipt" }),
-      payment: { role: "payment", bill: null, how: null, paidLate: false, needsBill: true, staleChoice: false, locked: false },
+      payment: { role: "payment", bill: null, how: null, paidLate: false, needsBill: true, staleChoice: false, locked: false, duplicateOf: null, maybeDuplicateOf: null },
     });
     const paired = item("paired", "Payment received", "F", "f@x.example", undefined, null, [], {
       picked: picked({ kind: "receipt" }),
-      payment: { role: "payment", bill: { id: "bill", date: "2026-10-05T09:00:00Z", amount: 10 }, how: "auto", paidLate: false, needsBill: false, staleChoice: false, locked: false },
+      payment: { role: "payment", bill: { id: "bill", date: "2026-10-05T09:00:00Z", amount: 10 }, how: "auto", paidLate: false, needsBill: false, staleChoice: false, locked: false, duplicateOf: null, maybeDuplicateOf: null },
     });
     expect(ids(filterCaptures([...varied, waiting, paired], { needsBill: true }))).toEqual(["waiting"]);
     // In the Review list even once marked Checked: marking it does not choose its bill.

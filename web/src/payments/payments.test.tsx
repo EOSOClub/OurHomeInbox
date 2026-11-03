@@ -58,8 +58,22 @@ const PAIRED: PaymentSide = {
   needsBill: false,
   staleChoice: false,
   locked: false,
+  duplicateOf: null,
+  maybeDuplicateOf: null,
 };
-const NEEDS_BILL: PaymentSide = { role: "payment", bill: null, how: null, paidLate: false, needsBill: true, staleChoice: false, locked: false };
+const NEEDS_BILL: PaymentSide = {
+  role: "payment",
+  bill: null,
+  how: null,
+  paidLate: false,
+  needsBill: true,
+  staleChoice: false,
+  locked: false,
+  duplicateOf: null,
+  maybeDuplicateOf: null,
+};
+/** The Waste Management payment email a second email repeats. */
+const ORIGINAL = { id: "proton-bills/1700000000/4", date: "2026-07-12T03:02:27.000Z", biller: "Waste Management" };
 
 function detail(payment: PaymentInfo, id = PAYMENT_ID): CaptureDetailResponse & { payment: PaymentInfo } {
   return { id, biller: { id: 3, name: "City Water", kind: "bill", matchedOn: "water.example" }, payment } as unknown as CaptureDetailResponse & { payment: PaymentInfo };
@@ -124,6 +138,25 @@ describe("a payment's line", () => {
     render(<PaymentSummary payment={{ ...NEEDS_BILL, staleChoice: true }} />);
     expect(text()).toContain("Needs a bill");
     expect(text()).toContain("The bill chosen for this payment can no longer be used. Choose another.");
+  });
+
+  it("says a second email is the same payment as another, as a link, and still offers Choose a bill", () => {
+    show(<PaymentEditor detail={detail({ ...NEEDS_BILL, needsBill: false, duplicateOf: ORIGINAL })} />);
+    const link = screen.getByRole("link", { name: /^Open the Jul 1[12](, 2026)? Waste Management payment$/ });
+    expect(link.getAttribute("href")).toBe("/mail/proton-bills/1700000000/4");
+    expect(text()).toMatch(/Same payment as the Jul 1[12](, 2026)? Waste Management payment/);
+    expect(text()).toContain("it is not sent to OurHome and the payment counts once");
+    expect(text()).not.toContain("Needs a bill");
+    expect(screen.getByRole("button", { name: "Choose a bill" })).toBeTruthy();
+  });
+
+  it("names the payment a payment that needs a bill may repeat, but not on a stale choice", () => {
+    render(<PaymentSummary payment={{ ...NEEDS_BILL, maybeDuplicateOf: ORIGINAL }} />);
+    expect(text()).toContain("Needs a bill");
+    expect(text()).toMatch(/It may be a second email about the Jul 1[12](, 2026)? Waste Management payment: if so, mark it Not a bill\./);
+    cleanup();
+    render(<PaymentSummary payment={{ ...NEEDS_BILL, maybeDuplicateOf: ORIGINAL, staleChoice: true }} />);
+    expect(text()).not.toContain("It may be a second email");
   });
 
   it("is locked once sent to OurHome: no Choose a bill", () => {

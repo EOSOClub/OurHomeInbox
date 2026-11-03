@@ -17,6 +17,9 @@
 // those, so they come before the check), and, once the check rule lets it go,
 // until its bill goes to OurHome first. Every bill carries a `reference`; a
 // paired payment carries its bill's, with the fee and whether it was late.
+// A second email about a payment another email reports (pairing.ts) is never
+// sent, even when Checked, so OurHome counts the payment once (owner,
+// 2026-11-02). Copies of one email (copies.ts) are decided in captures.ts.
 //
 // Pure: no database, no files, so every branch is tested directly.
 
@@ -32,15 +35,18 @@ export type BaseItem = Omit<CaptureListItem, "handoff" | "payment">;
  * A payment's pairing, as the hand-off needs it:
  * - own: Paid on its own; it goes with no reference.
  * - needs-bill: no bill fits and nobody chose one.
- * - bill-missing: its chosen or locked bill's email cannot be read.
  *   `staleChoice`: someone chose a bill that can no longer be used.
+ *   `maybeDuplicateOf`: the payment it may repeat, in words ("the Midco payment email of 2026-08-27").
+ * - duplicate: a second email about the payment `of` names, in the same words.
+ * - bill-missing: its chosen or locked bill's email cannot be read.
  * - paired: it pays a bill. `billGoes` is true when that bill goes to OurHome
  *   (it is numbered first, so it always has the lower number). `locked`: the
  *   payment has already been sent, so it no longer waits for its bill.
  */
 export type PaymentHandoff =
   | { pairing: "own" }
-  | { pairing: "needs-bill"; staleChoice?: boolean }
+  | { pairing: "needs-bill"; staleChoice?: boolean; maybeDuplicateOf?: string }
+  | { pairing: "duplicate"; of: string }
   | { pairing: "bill-missing" }
   | {
       pairing: "paired";
@@ -184,6 +190,16 @@ export const PAIRING_REASONS = {
   billFirst: "Waits for its bill to go to OurHome first.",
 } as const;
 
+/** Why a second email about a payment is never sent. `of` names the payment, "the Waste Management payment email of 2026-07-11". */
+export function duplicateReason(of: string): string {
+  return `A second email about ${of}: it is not sent, so OurHome counts the payment once. If it is a separate payment, choose its bill or mark it Paid on its own.`;
+}
+
+/** Needs a bill, naming the payment it may repeat. */
+export function maybeDuplicateReason(of: string): string {
+  return `${PAIRING_REASONS.needsBill} It may be a second email about ${of}: if so, mark it Not a bill.`;
+}
+
 /** Whether the email goes to OurHome, waits, or never goes, and why. */
 export function handoffDecision(input: HandoffInput): HandoffDecision {
   const decision = checkDecision(input);
@@ -219,7 +235,11 @@ function checkDecision(input: HandoffInput): HandoffDecision {
 
   if (item.picked.kind === "receipt") {
     const payment = input.payment ?? { pairing: "needs-bill" };
-    if (payment.pairing === "needs-bill") return waits(payment.staleChoice ? PAIRING_REASONS.staleChoice : PAIRING_REASONS.needsBill);
+    if (payment.pairing === "duplicate") return never(duplicateReason(payment.of));
+    if (payment.pairing === "needs-bill") {
+      if (payment.staleChoice) return waits(PAIRING_REASONS.staleChoice);
+      return waits(payment.maybeDuplicateOf ? maybeDuplicateReason(payment.maybeDuplicateOf) : PAIRING_REASONS.needsBill);
+    }
     if (payment.pairing === "bill-missing") return waits(PAIRING_REASONS.billMissing);
     if (payment.pairing === "paired" && payment.billBeforeStart && !payment.locked) return waits(PAIRING_REASONS.beforeStart);
   }

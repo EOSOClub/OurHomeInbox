@@ -3,7 +3,16 @@
 
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { handoffDecision, handoffDocument, isoDay, PAIRING_REASONS, type HandoffInput, type PaymentHandoff } from "../../../src/server/handoff/rules.js";
+import {
+  duplicateReason,
+  handoffDecision,
+  handoffDocument,
+  isoDay,
+  maybeDuplicateReason,
+  PAIRING_REASONS,
+  type HandoffInput,
+  type PaymentHandoff,
+} from "../../../src/server/handoff/rules.js";
 import type { CaptureListItem } from "../../../src/shared/api.js";
 import type { ExtractionSummary } from "../../../src/shared/extraction.js";
 
@@ -219,6 +228,24 @@ describe("references and pairing (contract v2)", () => {
     expect(decide(evening, { startDate: "2026-11-01", emailDay: "2026-10-31" }).state).toBe("never");
     expect(decide(evening, { startDate: "2026-11-01", emailDay: "2026-11-01" }).state).toBe("goes");
     expect(handoffDocument(input(evening, { emailDay: "2026-10-31" })).dueDate).toBe("2026-10-31");
+  });
+
+  it("never sends a second email about a payment, even when Checked, so OurHome counts the payment once", () => {
+    const of = "the Waste Management payment email of 2026-07-11";
+    expect(decide(checkedReceipt, { payment: { pairing: "duplicate", of } })).toEqual({ state: "never", reason: duplicateReason(of) });
+    expect(duplicateReason(of)).toBe(
+      "A second email about the Waste Management payment email of 2026-07-11: it is not sent, so OurHome counts the payment once. If it is a separate payment, choose its bill or mark it Paid on its own.",
+    );
+    // The usual never rules still come first.
+    expect(decide(receipt({ review: { state: "not-bill", by: "Sam", at: "x" } }), { payment: { pairing: "duplicate", of } }).reason).toBe("Marked Not a bill.");
+  });
+
+  it("names the payment a payment that needs a bill may repeat, unless its chosen bill went stale", () => {
+    const of = "the Midco payment email of 2026-08-27";
+    const reason = maybeDuplicateReason(of);
+    expect(reason).toBe(`${PAIRING_REASONS.needsBill} It may be a second email about the Midco payment email of 2026-08-27: if so, mark it Not a bill.`);
+    expect(decide(checkedReceipt, { payment: { pairing: "needs-bill", maybeDuplicateOf: of } })).toEqual({ state: "waits", reason });
+    expect(decide(checkedReceipt, { payment: { pairing: "needs-bill", staleChoice: true, maybeDuplicateOf: of } }).reason).toBe(PAIRING_REASONS.staleChoice);
   });
 
   it("holds a paired payment until its bill goes, on top of the check rule", () => {

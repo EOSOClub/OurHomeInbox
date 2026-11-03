@@ -1,7 +1,16 @@
 // Which bill each payment pays (the vault's "Hand-off" note, section 7).
 
 import { describe, expect, it } from "vitest";
-import { fitsFeeBand, headerOffset, pairPayments, senderDay, type FixedPairing, type PairingEmail, type PairingInput } from "../../../src/server/payments/pairing.js";
+import {
+  fitsFeeBand,
+  headerOffset,
+  namesBiller,
+  pairPayments,
+  senderDay,
+  type FixedPairing,
+  type PairingEmail,
+  type PairingInput,
+} from "../../../src/server/payments/pairing.js";
 
 const WATER = 3;
 /** When a fixed pairing was chosen, where it does not matter. */
@@ -14,6 +23,8 @@ function bill(id: string, day: string, amount: number | null, more: Partial<Pair
     id,
     kind: "bill",
     billerId: WATER,
+    billerName: "City Water",
+    names: "",
     amountCents: amount === null ? null : Math.round(amount * 100),
     notBill: false,
     emailTime: `${day}T12:00:00.000Z`,
@@ -48,6 +59,8 @@ describe("pairPayments", () => {
       billMissing: false,
       beforeStart: false,
       staleChoice: false,
+      duplicateOf: null,
+      maybeDuplicateOf: null,
     });
     expect(result.paidBy.get("b1")).toBe("p1");
   });
@@ -206,6 +219,113 @@ describe("fixed pairings, checked again on every read", () => {
     const fixed = new Map<string, FixedPairing>([["p", { billId: "b", locked: true, person: false, chosenAt: CHOSEN }]]);
     const result = pair([bill("b", "2026-10-06", 80, { notBill: true }), payment("p", "2026-10-10", 80)], { fixed, reported: new Set(["b"]) });
     expect(result.payments.get("p")).toMatchObject({ billId: "b", locked: true, needsBill: false, staleChoice: false });
+  });
+});
+
+describe("second emails about one payment", () => {
+  const WM = 5;
+  const wm: Partial<PairingEmail> = { billerId: WM, billerName: "Waste Management" };
+  /** PayPal's receipt: no biller, the merchant named in its subject, cut short as PayPal does. */
+  const paypal = (id: string, day: string, amount: number, more: Partial<PairingEmail> = {}) =>
+    payment(id, day, amount, { billerId: null, billerName: null, names: "waste management nat...: $57.39 usd paypal", ...more });
+  const own: FixedPairing = { billId: null, locked: false, person: true, chosenAt: CHOSEN };
+
+  it("makes PayPal's receipt a duplicate of the biller's own confirmation, even when PayPal's came first (the owner's case)", () => {
+    // PayPal's receipt at 8:02 pm Jul 11 in Sioux Falls; Waste Management's confirmation seven minutes later.
+    const result = pair([
+      bill("bill", "2026-07-01", 57.39, wm),
+      paypal("pp", "2026-07-11", 57.39, { emailTime: "2026-07-12T03:02:43.000Z" }),
+      payment("wm", "2026-07-11", 57.39, { ...wm, emailTime: "2026-07-12T03:09:27.000Z" }),
+    ]);
+    expect(result.payments.get("wm")).toMatchObject({ billId: "bill", how: "auto", duplicateOf: null });
+    expect(result.payments.get("pp")).toMatchObject({ billId: null, how: null, needsBill: false, duplicateOf: "wm", maybeDuplicateOf: null });
+    expect(result.paidBy.get("bill")).toBe("wm");
+  });
+
+  it("repeats a biller's payment that has no bill email either", () => {
+    const result = pair([paypal("pp", "2026-07-11", 57.39), payment("wm", "2026-07-12", 57.39, wm)]);
+    expect(result.payments.get("wm")).toMatchObject({ needsBill: true, duplicateOf: null });
+    expect(result.payments.get("pp")).toMatchObject({ needsBill: false, duplicateOf: "wm" });
+  });
+
+  it("makes a biller's second confirmation of one payment a duplicate of the first, which keeps the bill", () => {
+    const result = pair([bill("b", "2026-10-06", 80), payment("p1", "2026-10-15", 80), payment("p2", "2026-10-16", 80)]);
+    expect(result.payments.get("p1")).toMatchObject({ billId: "b", duplicateOf: null });
+    expect(result.payments.get("p2")).toMatchObject({ billId: null, needsBill: false, duplicateOf: "p1" });
+  });
+
+  it("keeps the older of two confirmations with no bill, whatever order they come in", () => {
+    const result = pair([payment("newer", "2026-10-16", 80), payment("older", "2026-10-15", 80)]);
+    expect(result.payments.get("older")).toMatchObject({ needsBill: true, duplicateOf: null });
+    expect(result.payments.get("newer")).toMatchObject({ needsBill: false, duplicateOf: "older" });
+  });
+
+  it("leaves alone payments that each have a bill, however alike", () => {
+    const result = pair([bill("oct", "2026-10-06", 80), bill("nov", "2026-11-06", 80), payment("p1", "2026-11-10", 80), payment("p2", "2026-11-12", 80)]);
+    expect(result.payments.get("p1")).toMatchObject({ billId: "oct", duplicateOf: null });
+    expect(result.payments.get("p2")).toMatchObject({ billId: "nov", duplicateOf: null });
+  });
+
+  it("needs the same amount in cents and payment days at most 3 apart", () => {
+    const base = payment("wm", "2026-07-11", 57.39, wm);
+    expect(pair([base, paypal("pp", "2026-07-11", 57.4)]).payments.get("pp")).toMatchObject({ needsBill: true, duplicateOf: null, maybeDuplicateOf: null });
+    expect(pair([base, paypal("pp", "2026-07-14", 57.39)]).payments.get("pp")!.duplicateOf).toBe("wm");
+    expect(pair([base, paypal("pp", "2026-07-08", 57.39)]).payments.get("pp")!.duplicateOf).toBe("wm");
+    expect(pair([base, paypal("pp", "2026-07-15", 57.39)]).payments.get("pp")).toMatchObject({ needsBill: true, duplicateOf: null });
+    // A paid date counts as the payment's day, as in pairing.
+    expect(pair([base, paypal("pp", "2026-07-20", 57.39, { paidDay: "2026-07-12" })]).payments.get("pp")!.duplicateOf).toBe("wm");
+  });
+
+  it("never matches another biller's payment, and only names a maybe when the receipt does not name the biller", () => {
+    expect(pair([payment("water", "2026-07-11", 57.39), payment("power", "2026-07-11", 57.39, { billerId: POWER })]).payments.get("power")).toMatchObject({
+      needsBill: true,
+      duplicateOf: null,
+      maybeDuplicateOf: null,
+    });
+    // A debit card receipt names no merchant in its subject: only a maybe, for a person to settle.
+    const debit = paypal("pp", "2026-07-11", 57.39, { names: "receipt for your paypal debit card purchase paypal" });
+    expect(pair([payment("wm", "2026-07-11", 57.39, wm), debit]).payments.get("pp")).toMatchObject({ needsBill: true, duplicateOf: null, maybeDuplicateOf: "wm" });
+  });
+
+  it("never makes a payment with no biller an original", () => {
+    const result = pair([paypal("a", "2026-07-11", 57.39), paypal("b", "2026-07-11", 57.39)]);
+    for (const id of ["a", "b"]) expect(result.payments.get(id)).toMatchObject({ needsBill: true, duplicateOf: null, maybeDuplicateOf: null });
+  });
+
+  it("leaves a payment a person decided, or one already sent, as it is", () => {
+    const wmPaid = payment("wm", "2026-07-11", 57.39, wm);
+    expect(pair([wmPaid, paypal("pp", "2026-07-11", 57.39)], { fixed: new Map([["pp", own]]) }).payments.get("pp")).toMatchObject({ how: "own", duplicateOf: null });
+    const stale: FixedPairing = { billId: "gone", locked: false, person: true, chosenAt: CHOSEN };
+    expect(pair([wmPaid, paypal("pp", "2026-07-11", 57.39)], { fixed: new Map([["pp", stale]]) }).payments.get("pp")).toMatchObject({
+      needsBill: true,
+      staleChoice: true,
+      duplicateOf: null,
+    });
+    const sent: FixedPairing = { billId: null, locked: true, person: true, chosenAt: CHOSEN };
+    const locked = pair([bill("b", "2026-10-06", 80), payment("p1", "2026-10-15", 80), payment("p2", "2026-10-16", 80)], { fixed: new Map([["p2", sent]]) });
+    expect(locked.payments.get("p2")).toMatchObject({ how: "own", locked: true, duplicateOf: null });
+    expect(locked.payments.get("p1")).toMatchObject({ billId: "b", duplicateOf: null });
+  });
+
+  it("prefers the original that has its bill, then the nearest day", () => {
+    // wm1 has the bill; wm2 (no bill) is a duplicate of it; PayPal's receipt is a duplicate of wm1, never of wm2.
+    const result = pair([bill("b", "2026-07-01", 57.39, wm), payment("wm1", "2026-07-09", 57.39, wm), payment("wm2", "2026-07-11", 57.39, wm), paypal("pp", "2026-07-11", 57.39)]);
+    expect(result.payments.get("wm2")!.duplicateOf).toBe("wm1");
+    expect(result.payments.get("pp")!.duplicateOf).toBe("wm1");
+  });
+});
+
+describe("namesBiller", () => {
+  it("finds the biller's name, or its first 12 characters, at the start of a word", () => {
+    expect(namesBiller("waste management nat...: $57.39 usd", "Waste Management")).toBe(true);
+    expect(namesBiller("city of sioux...: $63.34 usd", "City of Sioux Falls Utility Billing")).toBe(true);
+    expect(namesBiller("city of sio...: $63.34 usd", "City of Sioux Falls Utility Billing")).toBe(false);
+    expect(namesBiller("you paid midco: $114.93 usd", "Midco")).toBe(true);
+    expect(namesBiller("you paid amidco: $114.93 usd", "Midco")).toBe(false);
+    expect(namesBiller("amidco and midco", "Midco")).toBe(true);
+    expect(namesBiller("xcel energy: $3.00 usd", "  Xcel   Energy ")).toBe(true);
+    expect(namesBiller("anything", null)).toBe(false);
+    expect(namesBiller("anything", "   ")).toBe(false);
   });
 });
 

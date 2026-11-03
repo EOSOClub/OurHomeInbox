@@ -78,7 +78,7 @@ describe("emailCounts", () => {
       {
         ...base,
         picked: { ...base.picked, kind: "receipt", needsCheck: true },
-        payment: { role: "payment", bill: null, how: null, paidLate: false, needsBill: true, staleChoice: false, locked: false },
+        payment: { role: "payment", bill: null, how: null, paidLate: false, needsBill: true, staleChoice: false, locked: false, duplicateOf: null, maybeDuplicateOf: null },
       },
       { ...base, senderVerified: false, biller: null },
     ] as CaptureListItem[];

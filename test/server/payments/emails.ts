@@ -53,5 +53,14 @@ export function paymentEmail(uid: number, day: string, amount: string, options: 
   return email(uid, `Payment received ${uid}`, day, rows, undefined, options.dateHeader);
 }
 
+/**
+ * A payment service's receipt for a City Water payment, from a sender that is
+ * not one of the household's billers: PayPal names the merchant in the
+ * subject, cut short, "City Water Services...: $80.00 USD".
+ */
+export function serviceReceipt(uid: number, day: string, amount: string, subject = `City Water Services...: $${amount} USD`): Buffer {
+  return email(uid, subject, day, [["Amount Paid", `$${amount}`], ["Payment Date", printed(day)]], "PayPal <service@paypal.example>");
+}
+
 /** The capture id of email `uid` in the test mailbox. */
 export const id = (uid: number) => `proton-bills/1700000000/${uid}`;

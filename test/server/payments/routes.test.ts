@@ -3,13 +3,14 @@
 // OurHomeInbox choose (the vault's "Hand-off" note, section 7).
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PAIRING_REASONS } from "../../../src/server/handoff/rules.js";
+import { copyReason } from "../../../src/server/copies.js";
+import { duplicateReason, maybeDuplicateReason, PAIRING_REASONS } from "../../../src/server/handoff/rules.js";
 import { lockPairings, setPick } from "../../../src/server/payments/store.js";
 import type { ApiError, Biller, CaptureDetailResponse, CaptureListResponse } from "../../../src/shared/api.js";
 import type { HandoffDocumentsResponse, OurHomeTokenResponse } from "../../../src/shared/handoff.js";
 import type { BillChoicesResponse, PairingResponse } from "../../../src/shared/payments.js";
 import { call, json, makeServer, saveEmail, setUp, type TestServer } from "../helpers.js";
-import { billEmail, id, paymentEmail } from "./emails.js";
+import { billEmail, id, paymentEmail, serviceReceipt } from "./emails.js";
 
 let server: TestServer;
 let cookie: string;
@@ -46,6 +47,8 @@ describe("what the pages say", () => {
       needsBill: false,
       staleChoice: false,
       locked: false,
+      duplicateOf: null,
+      maybeDuplicateOf: null,
     });
     expect((await detail(1)).payment).toEqual({ role: "bill", paidBy: { id: id(2), date: "2026-10-15T12:00:00.000Z" }, ourhome: null });
     const { captures } = await json<CaptureListResponse>(await send("GET", "/api/captures"));
@@ -73,6 +76,106 @@ describe("what the pages say", () => {
     await saveEmail(server.store, billEmail(1, "2026-10-06", "80.00"), { uid: 1 });
     await mark([1], "not-bill");
     expect((await detail(1)).payment).toBeNull();
+  });
+});
+
+describe("second emails about one payment, and copies of one email", () => {
+  const feed = async (token: string) =>
+    (await json<HandoffDocumentsResponse>(await call(server.app, "/api/handoff/documents", { headers: { Authorization: `Bearer ${token}` } }))).documents;
+  const connect = async () => (await json<OurHomeTokenResponse>(await send("POST", "/api/ourhome/token", { startDate: "2026-09-01" }))).token;
+
+  it("never sends PayPal's receipt for a payment City Water confirmed, says which payment it repeats, and lets a person overrule it", async () => {
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "80.00"), { uid: 1 });
+    await saveEmail(server.store, paymentEmail(2, "2026-10-15", "80.00"), { uid: 2 });
+    await saveEmail(server.store, serviceReceipt(3, "2026-10-15", "80.00"), { uid: 3 });
+    const page = await detail(3);
+    expect(page.payment).toEqual({
+      role: "payment",
+      bill: null,
+      how: null,
+      paidLate: false,
+      needsBill: false,
+      staleChoice: false,
+      locked: false,
+      duplicateOf: { id: id(2), date: "2026-10-15T12:00:00.000Z", biller: "City Water" },
+      maybeDuplicateOf: null,
+    });
+    expect(page.handoff).toMatchObject({ state: "never", reason: duplicateReason("the City Water payment email of 2026-10-15") });
+    expect((await detail(1)).payment).toMatchObject({ paidBy: { id: id(2) } });
+
+    const token = await connect();
+    await mark([1, 2, 3], "checked");
+    expect((await feed(token)).map((d) => d.captureId)).toEqual([id(1), id(2)]);
+
+    // A separate payment after all: Paid on its own overrules it.
+    expect((await choose(3, { choice: "own" })).status).toBe(200);
+    expect((await detail(3)).payment).toMatchObject({ how: "own", duplicateOf: null, needsBill: false });
+  });
+
+  it("only names a maybe when the receipt does not name the biller (a debit card purchase)", async () => {
+    await saveEmail(server.store, paymentEmail(2, "2026-10-15", "80.00"), { uid: 2 });
+    await saveEmail(server.store, serviceReceipt(3, "2026-10-16", "80.00", "Receipt for your PayPal Debit Card purchase"), { uid: 3 });
+    const page = await detail(3);
+    expect(page.payment).toMatchObject({ needsBill: true, duplicateOf: null, maybeDuplicateOf: { id: id(2), biller: "City Water" } });
+    expect(page.handoff).toMatchObject({ state: "waits", reason: maybeDuplicateReason("the City Water payment email of 2026-10-15") });
+  });
+
+  it("uses one email captured from two mailboxes once: the copy is never sent and is left out of pairing", async () => {
+    const res = await send("POST", "/api/mailboxes", {
+      name: "Bill label",
+      provider: "proton-bridge",
+      host: "protonmail-bridge",
+      port: 143,
+      security: "none",
+      username: "sam@proton.me",
+      password: "test-label-secret",
+      folder: "Labels/Bill",
+    });
+    expect(res.status).toBe(201);
+    const copy = "bill-label/1700000000/9";
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "80.00"), { uid: 1 });
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "80.00"), { uid: 9, mailbox: "Bill label", capturedAt: "2026-10-29T12:05:00Z" });
+    await saveEmail(server.store, paymentEmail(2, "2026-10-15", "80.00"), { uid: 2 });
+
+    const copyPage = await json<CaptureDetailResponse>(await send("GET", `/api/captures/${copy}`));
+    expect(copyPage.handoff).toMatchObject({ state: "never", reason: copyReason("Proton bills") });
+    expect(copyPage.payment).toBeNull();
+    expect((await detail(2)).payment).toMatchObject({ bill: { id: id(1) }, duplicateOf: null });
+    expect((await detail(1)).payment).toMatchObject({ paidBy: { id: id(2) } });
+
+    const token = await connect();
+    await mark([1, 2], "checked");
+    expect((await send("PUT", "/api/captures/review", { captureIds: [copy], state: "checked" })).status).toBe(200);
+    expect((await feed(token)).map((d) => d.captureId)).toEqual([id(1), id(2)]);
+  });
+
+  it("keeps the email already sent to OurHome as the original, and never withdraws a copy", async () => {
+    expect(
+      (
+        await send("POST", "/api/mailboxes", {
+          name: "Bill label",
+          provider: "proton-bridge",
+          host: "protonmail-bridge",
+          port: 143,
+          security: "none",
+          username: "sam@proton.me",
+          password: "test-label-secret",
+          folder: "Labels/Bill",
+        })
+      ).status,
+    ).toBe(201);
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "80.00"), { uid: 1 });
+    const token = await connect();
+    await mark([1], "checked");
+    expect((await feed(token)).map((d) => d.captureId)).toEqual([id(1)]);
+
+    // Captured earlier than the one sent (a mailbox read again, say), but the one OurHome has stays the original.
+    const copy = "bill-label/1700000000/9";
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "80.00"), { uid: 9, mailbox: "Bill label", capturedAt: "2026-10-01T00:00:00Z" });
+    expect((await send("PUT", "/api/captures/review", { captureIds: [copy], state: "checked" })).status).toBe(200);
+    expect((await json<CaptureDetailResponse>(await send("GET", `/api/captures/${copy}`))).handoff).toMatchObject({ state: "never" });
+    const entries = await feed(token);
+    expect(entries.map((d) => [d.captureId, d.status])).toEqual([[id(1), "ready"]]);
   });
 });
 

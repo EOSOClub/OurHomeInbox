@@ -116,7 +116,9 @@ export async function refreshOffers(deps: HandoffDeps, householdId: number): Pro
   // Oldest first, so the numbers follow the emails' age.
   const emails = (await readHouseholdEmails(deps, householdId)).reverse();
   // A locked payment whose bill's email cannot be read is left as it was, like an email that is missing.
-  const kept = emails.filter((email) => !(email.pairing?.locked && email.pairing.billMissing));
+  // A copy of an email (copies.ts) is left alone too: it is never offered, and one offered before is not
+  // withdrawn, since OurHome would take that as withdrawing the original (they share the Message-ID).
+  const kept = emails.filter((email) => !(email.pairing?.locked && email.pairing.billMissing) && email.copyOf === null);
   const decided = (list: HouseholdEmail[]) => list.map(({ item, decision }) => ({ captureId: item.id, decision }));
   const now = deps.now();
   // Bills (and everything else) first, then payments: a payment that goes always gets a higher number than its bill.

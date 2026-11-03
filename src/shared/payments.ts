@@ -12,6 +12,20 @@ export const FEE_FLOOR_CENTS = 600;
 export const FEE_PERCENT = 4;
 
 /**
+ * Second emails about one payment (owner, 2026-11-02): a payment that finds no
+ * bill repeats another payment of the same amount paid at most this many days
+ * apart (the biller's own confirmation and PayPal's receipt for it, say).
+ */
+export const DUPLICATE_DAYS = 3;
+
+/** Another payment email, as a payment's page names it. `date` is that email's own date, else when it was captured. */
+export interface PaymentRef {
+  id: string;
+  date: string;
+  biller: string | null;
+}
+
+/**
  * How a payment came to pay its bill:
  * - auto: OurHomeInbox chose it (the oldest fitting bill of that biller).
  * - person: someone chose it with Choose a bill.
@@ -34,6 +48,10 @@ export interface PaymentSide {
   staleChoice: boolean;
   /** Sent to OurHome: its bill can only be changed in OurHome now. */
   locked: boolean;
+  /** A second email about the payment this one reports: it is never sent, so OurHome counts the payment once. */
+  duplicateOf: PaymentRef | null;
+  /** While it needs a bill: a payment of the same amount a few days apart that it may repeat (a person decides). */
+  maybeDuplicateOf: PaymentRef | null;
 }
 
 /** A bill email's place in pairing. */

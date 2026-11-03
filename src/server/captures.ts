@@ -10,7 +10,9 @@
 // its tags (see tags.ts), a person's review mark (see reviews.ts), whether the mail provider confirmed that sender (see sender.ts), what
 // the reader picked out of it with that biller's rules (see
 // extraction.ts and rules.ts), which bill a payment pays and what pays a bill
-// (see payments/pairing.ts), and whether it goes to OurHome (see
+// (see payments/pairing.ts), whether it is a copy of an email captured from
+// another mailbox (see copies.ts: a copy is never sent and is left out of
+// pairing), and whether it goes to OurHome (see
 // handoff/rules.ts), worked out on every request so a change to a biller or a
 // rule shows at once. Pairing looks at every email of the household, so even
 // one email's page goes through them all, as the list does; captureCache.ts
@@ -29,11 +31,12 @@ import type { Capture } from "../shared/capture.js";
 import type { HandoffDocument, HandoffInfo } from "../shared/handoff.js";
 import { FIELDS, type BillerRule, type FieldName } from "../shared/extraction.js";
 import type { InvoiceInfo, InvoiceRecord } from "../shared/invoice.js";
-import type { OurHomeChangeKind, PaymentInfo } from "../shared/payments.js";
+import type { OurHomeChangeKind, PaymentInfo, PaymentRef } from "../shared/payments.js";
 import type { CaptureStore } from "../store.js";
 import { listBillers } from "./billers.js";
 import type { CachedEmail, CaptureCache } from "./captureCache.js";
 import type { Database } from "./db.js";
+import { copyReason, findCopies } from "./copies.js";
 import { choicesFor, extract, PreparedEmail } from "./extraction.js";
 import { apiError, householdOf, type AppEnv } from "./http.js";
 import { INVOICE_FILE, readCapture, readInvoiceRecord, UID, UID_VALIDITY } from "./mail.js";
@@ -41,7 +44,7 @@ import type { MailboxPlace, Mailboxes } from "./mailboxes.js";
 import { BillerMatcher } from "./matching.js";
 import { billReference, documentMessageId, handoffDecision, type BaseItem, type HandoffDecision, type PaymentHandoff } from "./handoff/rules.js";
 import { connectionRow, householdOffers, liveStartDate, type OfferRow } from "./handoff/store.js";
-import { pairingEmail, pairPayments, type FixedPairing, type PairingEmail, type PairingResult, type PaymentPairing } from "./payments/pairing.js";
+import { pairingEmail, pairPayments, paymentDay, type FixedPairing, type PairingEmail, type PairingResult, type PaymentPairing } from "./payments/pairing.js";
 import { householdPairings, householdReports } from "./payments/store.js";
 import { billerEmails, householdRules } from "./rules.js";
 import { captureReviews } from "./reviews.js";
@@ -86,6 +89,8 @@ export interface HouseholdEmail {
   decision: HandoffDecision;
   pairing: PaymentPairing | null;
   seen: PairingEmail;
+  /** The capture id of the email this one is a copy of (same Message-ID, another mailbox), or null. */
+  copyOf: string | null;
 }
 
 interface HandoffRecords {
@@ -171,8 +176,12 @@ class HouseholdReader {
    * bill goes. `read` must be every email of the household, for pairing.
    */
   finish(read: readonly ReadEmail[]): HouseholdEmail[] {
-    const { pairings, reports, startDate } = this.handoffRecords();
+    const { pairings, reports, startDate, offers } = this.handoffRecords();
     const byId = new Map(read.map((email) => [email.base.id, email]));
+    // The same email from two mailboxes is one email: only its original is paired and decided.
+    const copyOf = findCopies(
+      read.map(({ base, messageId }) => ({ id: base.id, messageId, offered: offers.get(base.id)?.number ?? null, capturedAt: base.capturedAt })),
+    );
     // OurHome reports by the Message-ID it was offered; only bills matter.
     const reported = new Map<string, { change: OurHomeChangeKind; at: string }>();
     for (const { base, messageId } of read) {
@@ -180,27 +189,46 @@ class HouseholdReader {
       if (report) reported.set(base.id, report);
     }
     const seen = new Map(read.map(({ base, dateHeader }) => [base.id, pairingEmail(base, dateHeader)]));
-    const pairing = pairPayments({ emails: [...seen.values()], fixed: pairings, reported: new Set(reported.keys()), startDate });
+    const originals = [...seen.values()].filter((email) => !copyOf.has(email.id));
+    const pairing = pairPayments({ emails: originals, fixed: pairings, reported: new Set(reported.keys()), startDate });
 
     const decisions = new Map<string, HandoffDecision>();
     const dayOf = (id: string) => seen.get(id)!.emailDay;
     for (const { base, messageId } of read) {
-      if (!pairing.payments.has(base.id)) decisions.set(base.id, this.decide(base, messageId, null, dayOf(base.id)));
+      const original = copyOf.get(base.id);
+      if (original !== undefined) decisions.set(base.id, { state: "never", reason: copyReason(byId.get(original)!.base.mailbox) });
+      else if (!pairing.payments.has(base.id)) decisions.set(base.id, this.decide(base, messageId, null, dayOf(base.id)));
     }
     const reference = (bill: ReadEmail) => this.offeredReference(bill.base.id) ?? billReference({ item: bill.base, messageId: bill.messageId });
+    const ref = (id: string): PaymentRef => {
+      const { base } = byId.get(id)!;
+      return { id, date: shownDate(base), biller: base.biller?.name ?? null };
+    };
+    // "the Waste Management payment email of 2026-07-11": the payment's day, as pairing compares them.
+    const named = (id: string) => {
+      const { base } = byId.get(id)!;
+      return `the ${base.biller?.name ?? sender(base)} payment email of ${paymentDay(seen.get(id)!)}`;
+    };
     for (const { base, messageId } of read) {
       const paired = pairing.payments.get(base.id);
-      if (paired) decisions.set(base.id, this.decide(base, messageId, paymentHandoff(paired, byId, decisions, reference), dayOf(base.id)));
+      if (paired) decisions.set(base.id, this.decide(base, messageId, paymentHandoff(paired, byId, decisions, reference, named), dayOf(base.id)));
     }
 
     return read.map(({ base }) => {
       const decision = decisions.get(base.id)!;
       const paired = pairing.payments.get(base.id) ?? null;
+      const copy = copyOf.get(base.id) ?? null;
       return {
-        item: { ...base, handoff: this.handoffInfo(base.id, decision), payment: paymentInfo(base, paired, pairing, byId, seen, reported) },
+        item: {
+          ...base,
+          handoff: this.handoffInfo(base.id, decision),
+          // A copy has no pairing of its own: its original's page shows it.
+          payment: copy === null ? paymentInfo(base, paired, pairing, byId, seen, reported, ref) : null,
+        },
         decision,
         pairing: paired,
         seen: seen.get(base.id)!,
+        copyOf: copy,
       };
     });
   }
@@ -238,9 +266,14 @@ function paymentHandoff(
   byId: ReadonlyMap<string, ReadEmail>,
   decisions: ReadonlyMap<string, HandoffDecision>,
   reference: (bill: ReadEmail) => string,
+  named: (paymentId: string) => string,
 ): PaymentHandoff {
   if (paired.how === "own") return { pairing: "own" };
-  if (paired.needsBill) return { pairing: "needs-bill", staleChoice: paired.staleChoice };
+  if (paired.duplicateOf !== null) return { pairing: "duplicate", of: named(paired.duplicateOf) };
+  if (paired.needsBill) {
+    const maybe = paired.maybeDuplicateOf;
+    return { pairing: "needs-bill", staleChoice: paired.staleChoice, ...(maybe !== null ? { maybeDuplicateOf: named(maybe) } : {}) };
+  }
   const bill = paired.billId === null ? undefined : byId.get(paired.billId);
   if (!bill) return { pairing: "bill-missing" };
   return {
@@ -258,6 +291,9 @@ function paymentHandoff(
 /** The date a page shows for an email: its own date, else when it was captured. */
 const shownDate = (item: BaseItem) => item.date ?? item.capturedAt;
 
+/** Who sent it: the first From name, else its address. */
+const sender = (item: BaseItem) => item.from[0]?.name.trim() || item.from[0]?.address.trim() || "unknown sender";
+
 /** What the list and the email's page say about pairing: for a payment, its bill; for a bill, what pays it. */
 function paymentInfo(
   base: BaseItem,
@@ -266,6 +302,7 @@ function paymentInfo(
   byId: ReadonlyMap<string, ReadEmail>,
   seen: ReadonlyMap<string, PairingEmail>,
   reported: ReadonlyMap<string, { change: OurHomeChangeKind; at: string }>,
+  ref: (paymentId: string) => PaymentRef,
 ): PaymentInfo | null {
   if (paired) {
     const bill = paired.billId === null ? undefined : byId.get(paired.billId)?.base;
@@ -278,6 +315,8 @@ function paymentInfo(
       needsBill: paired.needsBill,
       staleChoice: paired.staleChoice,
       locked: paired.locked,
+      duplicateOf: paired.duplicateOf === null ? null : ref(paired.duplicateOf),
+      maybeDuplicateOf: paired.maybeDuplicateOf === null ? null : ref(paired.maybeDuplicateOf),
     };
   }
   if (base.picked.kind !== "bill" || base.review?.state === "not-bill") return null;
