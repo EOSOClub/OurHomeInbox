@@ -126,7 +126,12 @@ export async function refreshOffers(deps: HandoffDeps, householdId: number): Pro
   applyDecisions(deps.db, householdId, decided(kept.filter(isPayment)), now);
   // A payment offered as ready never changes its bill again.
   const sent = kept.filter((email) => isPayment(email) && email.decision.state === "goes" && !email.pairing?.locked);
-  lockPairings(deps.db, householdId, sent.map((email) => ({ paymentId: email.item.id, billId: email.pairing?.billId ?? null })), now);
+  lockPairings(
+    deps.db,
+    householdId,
+    sent.map((email) => ({ paymentId: email.item.id, billId: email.pairing?.billId ?? null, alsoBillIds: email.pairing?.also.map((a) => a.billId) ?? [] })),
+    now,
+  );
 }
 
 /** The household whose token came with the request, or an error reply. */

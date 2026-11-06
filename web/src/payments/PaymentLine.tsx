@@ -1,5 +1,6 @@
 // Pairing on an email's page (the vault's "Hand-off" note, section 7). On a
-// payment: "Pays the Oct 6 bill", "Paid late" when so, "Needs a bill" (with
+// payment: "Pays the Oct 6 bill", "Paid late" when so, "Waiting for its bill
+// email" (paid before the bill came in), "Needs a bill" (with
 // the payment it may repeat, when there is one), or "Same payment as" another
 // payment email (a second email about it, never sent), and
 // Choose a bill (the picker, BillPicker.tsx) until it has been sent to
@@ -50,6 +51,20 @@ function PaymentLines({ payment, emailRef }: { payment: PaymentSide; emailRef: E
       </>
     );
   }
+  if (payment.waitingUntil) {
+    return (
+      <>
+        <span className="flex items-center gap-1.5 font-medium">
+          <Clock aria-hidden className="size-4 shrink-0 text-accent" />
+          Waiting for its bill email
+        </span>
+        <span className="block text-sm text-muted">
+          Paid before the bill came in. The first bill email that fits it, up to {formatShortDate(`${payment.waitingUntil}T12:00:00Z`)}, is the one it pays.
+          After that it needs a bill. You can also choose its bill now.
+        </span>
+      </>
+    );
+  }
   if (payment.needsBill) {
     return (
       <>
@@ -92,14 +107,29 @@ function PaymentLines({ payment, emailRef }: { payment: PaymentSide; emailRef: E
       </>
     );
   }
-  const day = formatShortDate(payment.bill.date);
   const how = howLine(payment);
+  // "the Oct 6 bill", or for one payment for several: "the Aug 6 and Sep 8 bills", each day a link.
+  const all = [payment.bill, ...payment.alsoBills];
+  const days = all.map((bill, i) => {
+    const day = formatShortDate(bill.date);
+    const text = all.length === 1 ? `the ${day} bill` : i === 0 ? `the ${day}` : day;
+    const joiner = i === 0 ? null : i === all.length - 1 ? " and " : ", ";
+    return (
+      <span key={bill.id}>
+        {joiner}
+        {emailRef(bill.id, text, `Open the ${day} bill`)}
+      </span>
+    );
+  });
   return (
     <>
       <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="inline-flex items-center gap-1.5 font-medium">
           <Link2 aria-hidden className="size-4 shrink-0 text-accent" />
-          <span>Pays {emailRef(payment.bill.id, `the ${day} bill`, `Open the ${day} bill`)}</span>
+          <span>
+            Pays {days}
+            {all.length > 1 ? " bills" : null}
+          </span>
         </span>
         {payment.paidLate ? <span className="rounded border border-warn-line bg-warn-soft px-1.5 text-xs font-medium text-warn">Paid late</span> : null}
       </span>

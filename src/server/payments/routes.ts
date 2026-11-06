@@ -1,7 +1,7 @@
 // Choosing which bill a payment email pays (the vault's "Hand-off" note,
 // section 7), signed in:
 //   GET /api/captures/:mailbox/:uidValidity/:uid/bill-choices[?all=1]   the bills the picker lists, newest first
-//   PUT /api/captures/:mailbox/:uidValidity/:uid/pairing                a bill, Paid on its own, or Let OurHomeInbox choose
+//   PUT /api/captures/:mailbox/:uidValidity/:uid/pairing                a bill (or several), Paid on its own, or Let OurHomeInbox choose
 //
 // Scoped to the signed-in person's household: only its emails can be named.
 // Once a payment has been offered to OurHome as ready its pairing is locked,
@@ -10,7 +10,7 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { CaptureListItem, SessionUser } from "../../shared/api.js";
-import type { BillChoice, BillChoicesResponse, BillSide, PairingResponse } from "../../shared/payments.js";
+import { MAX_BILLS_PER_PAYMENT, type BillChoice, type BillChoicesResponse, type BillSide, type PairingResponse } from "../../shared/payments.js";
 import type { CaptureStore } from "../../store.js";
 import type { CaptureCache } from "../captureCache.js";
 import { readHouseholdEmails, type HouseholdEmail } from "../captures.js";
@@ -44,10 +44,19 @@ export const CHOICE_REASONS = {
   locked: "This payment has been sent to OurHome; change it there.",
 } as const;
 
+const TOO_MANY = `A payment can pay up to ${MAX_BILLS_PER_PAYMENT} bills.`;
+const TWICE = "Each bill can only be picked once.";
+
+const billIdSchema = z.string({ error: MESSAGES.badShape }).min(1, NO_BILL).max(300, NO_BILL);
+
 const pairingSchema = z.discriminatedUnion(
   "choice",
   [
-    z.object({ choice: z.literal("bill"), billId: z.string({ error: MESSAGES.badShape }).min(1, NO_BILL).max(300, NO_BILL) }),
+    z.object({ choice: z.literal("bill"), billId: billIdSchema }),
+    z.object({
+      choice: z.literal("bills"),
+      billIds: z.array(billIdSchema, { error: MESSAGES.badShape }).min(1, NO_BILL).max(MAX_BILLS_PER_PAYMENT, TOO_MANY),
+    }),
     z.object({ choice: z.literal("own") }),
     z.object({ choice: z.literal("auto") }),
   ],
@@ -114,8 +123,12 @@ export function billChoices(emails: readonly HouseholdEmail[], payment: CaptureL
     })
     .sort((a, b) => b.time.localeCompare(a.time) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
     .map(({ time: _time, ...choice }) => choice);
-  return { biller: payment.biller?.name ?? null, all: every, bills, locked };
+  const cents = emails.find(({ item }) => item.id === payment.id)?.seen.amountCents ?? null;
+  return { biller: payment.biller?.name ?? null, all: every, bills, locked, paymentAmount: cents === null ? null : cents / 100 };
 }
+
+/** "Nov 4" for a bill's date, in the server's words (an email date, ISO). */
+const shortDay = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 
 export function paymentRoutes(deps: PaymentDeps): Hono<AppEnv> {
   const { db, mailboxes, now } = deps;
@@ -160,10 +173,29 @@ export function paymentRoutes(deps: PaymentDeps): Hono<AppEnv> {
     } else if (request.choice === "own") {
       result = setPick(db, householdId, payment.id, null, (c.var.user as SessionUser).id, now());
     } else {
-      const choice = billChoices(emails, payment, true).bills.find((bill) => bill.id === request.billId);
-      if (!choice) return apiError(c, 404, NO_BILL);
-      if (!choice.canPick) return apiError(c, 409, choice.reason ?? NO_BILL);
-      result = setPick(db, householdId, payment.id, choice.id, (c.var.user as SessionUser).id, now());
+      const ids = request.choice === "bill" ? [request.billId] : request.billIds;
+      if (new Set(ids).size !== ids.length) return apiError(c, 400, TWICE);
+      const listed = billChoices(emails, payment, true);
+      const chosen: BillChoice[] = [];
+      for (const id of ids) {
+        const choice = listed.bills.find((bill) => bill.id === id);
+        if (!choice) return apiError(c, 404, NO_BILL);
+        if (!choice.canPick) return apiError(c, 409, choice.reason ?? NO_BILL);
+        chosen.push(choice);
+      }
+      // Oldest first, as pairing reads them: the oldest is the payment's bill, the others what it also pays.
+      const seenOf = new Map(emails.map((email) => [email.item.id, email.seen]));
+      chosen.sort((a, b) => seenOf.get(a.id)!.emailTime.localeCompare(seenOf.get(b.id)!.emailTime) || a.id.localeCompare(b.id));
+      // Every bill picked must get some of the payment: it is shared out oldest first.
+      if (chosen.length > 1 && listed.paymentAmount !== null) {
+        let before = 0;
+        for (const bill of chosen.slice(0, -1)) before += Math.round((bill.amount ?? 0) * 100);
+        if (Math.round(listed.paymentAmount * 100) <= before) {
+          return apiError(c, 409, `This payment is used up by the older bills before it reaches the ${shortDay(chosen[chosen.length - 1]!.date)} bill. Pick fewer bills.`);
+        }
+      }
+      const [main, ...also] = chosen;
+      result = setPick(db, householdId, payment.id, main!.id, (c.var.user as SessionUser).id, now(), also.map((bill) => bill.id));
     }
     if (result === "locked") return apiError(c, 409, LOCKED);
 

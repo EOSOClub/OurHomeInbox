@@ -11,12 +11,28 @@
 //   not marked Not a bill, an email date on or before the payment's day, not
 //   paired with another payment, and not reported paid or removed by OurHome.
 //   Fixed first: pairings a person chose, and pairings locked on sending.
-//   Then, per biller, payments in date order each take the oldest candidate
-//   whose amount fits OurHome's fee band (at least the bill, at most the bill
-//   plus the larger of 6.00 or 4% of it), in cents.
-//   Paid late: another bill of the same biller (amount known, not Not a bill)
-//   dated after the paired bill and on or before the payment's day; or the
-//   payment's day is after the bill's due date.
+//   Then, a payment whose invoice number is a candidate's takes that one (the
+//   city's receipts name the invoice they pay). Then, per biller, the other
+//   payments in date order each take the oldest candidate
+//   that asks for money (more than 0.00) whose amount fits: when the payment
+//   email states its own fee ("Convenience Fee $ 1.99"), the bill must be
+//   exactly the payment less that fee; otherwise OurHome's fee band (at least
+//   the bill, at most the bill plus the larger of 6.00 or 4% of it), in cents.
+//   (Seen 2026-11-05 in real mail: a 0.00 bill took a 4.13 payment through the
+//   6.00 band, and a 60.00 payment stating a 0.00 fee took a 56.52 bill.)
+//   Then, a payment still without a bill takes the first fitting candidate
+//   that came in after it, at most BILL_WAIT_DAYS later (paid before the bill
+//   email arrived; owner, 2026-11-05), the one naming its invoice number
+//   first. Until those days are past, one with a biller and no bill waits for
+//   its bill email instead of needing a bill.
+//   One payment for several bills (owner, 2026-11-05; contract v3): when no
+//   one bill fits, the biller's oldest unpaid bills, 2 to AUTO_BILLS_MAX in
+//   date order (before the payment or within its days after), when their sum
+//   fits. A person can pick several. The oldest is its bill (with the fee);
+//   the others are what it also pays, each with its part and its own late.
+//   Paid late: another bill of the same biller (asking for money, not Not a
+//   bill) dated after the paired bill and on or before the payment's day; or
+//   the payment's day is after the bill's due date.
 //   Fee: the payment less the bill when more, else 0 (a part payment a person
 //   chose has no fee); the base amount is the payment less the fee.
 //   Locked pairings are applied first and never change. A person's choice is
@@ -48,7 +64,7 @@
 // Pure: no database, no files, so every rule is tested directly.
 
 import type { EmailKind, FieldName } from "../../shared/extraction.js";
-import { DUPLICATE_DAYS, FEE_FLOOR_CENTS, FEE_PERCENT, type PairingHow } from "../../shared/payments.js";
+import { AUTO_BILLS_MAX, BILL_WAIT_DAYS, DUPLICATE_DAYS, FEE_FLOOR_CENTS, FEE_PERCENT, type PairingHow } from "../../shared/payments.js";
 import { isoDay, type BaseItem } from "../handoff/rules.js";
 
 /** One email as pairing sees it. */
@@ -62,6 +78,12 @@ export interface PairingEmail {
   names: string;
   /** The one amount picked out, in cents; null when there is none, more than one, or it is not money. */
   amountCents: number | null;
+  /** The one fee picked out (a payment's own "Convenience Fee" line), in cents; null when there is none or more than one. */
+  feeCents: number | null;
+  /** The one invoice number picked out, as `numberKey` writes it; null when there is none or more than one. */
+  invoiceNo: string | null;
+  /** The one account number picked out, as `numberKey` writes it; null when there is none or more than one. */
+  accountNo: string | null;
   notBill: boolean;
   /** The email's own date, else when it was captured (ISO): orders emails of the same day. */
   emailTime: string;
@@ -77,6 +99,8 @@ export interface PairingEmail {
 export interface FixedPairing {
   /** The bill, or null for Paid on its own. */
   billId: string | null;
+  /** The other bills it pays when it pays several (`billId` is the oldest); none otherwise. */
+  alsoBillIds: readonly string[];
   /** Sent to OurHome: never changes again. */
   locked: boolean;
   /** A person chose it (Choose a bill, or Paid on its own). */
@@ -93,6 +117,8 @@ export interface PairingInput {
   reported: ReadonlySet<string>;
   /** The OurHome connection's start date, or null with no connection. */
   startDate: string | null;
+  /** Today ("2026-11-05"): a payment with no bill yet waits for its bill email until BILL_WAIT_DAYS after it. */
+  today: string;
 }
 
 export interface PaymentPairing {
@@ -104,14 +130,20 @@ export interface PaymentPairing {
   locked: boolean;
   needsBill: boolean;
   paidLate: boolean;
+  /** The payment less all its bills when more, else 0; it belongs to the bill in billId. */
   feeCents: number;
+  /** The part of the payment that pays the bill in billId (the whole payment less the fee, when it pays one bill). */
   baseCents: number;
+  /** The other bills it pays, oldest first, when it pays several (contract v3 `alsoPays`): the part of the payment for each, and whether that one was late. */
+  also: Array<{ billId: string; cents: number; paidLate: boolean }>;
   /** A fixed pairing names a bill email that is not among the household's emails (its mailbox removed, say). */
   billMissing: boolean;
   /** Its bill is dated before the OurHome start date. */
   beforeStart: boolean;
   /** A person chose a bill that can no longer be used, so it needs a bill again. */
   staleChoice: boolean;
+  /** Paid before its bill email came in, with none fitting yet: it waits until this day, then needs a bill. Then needsBill is false. */
+  waitingUntil: string | null;
   /** A second email about this payment's original (its id): never sent. Then billId and how are null and needsBill is false. */
   duplicateOf: string | null;
   /** While it needs a bill: the payment it may repeat (its id), matching on amount and days only. */
@@ -173,6 +205,8 @@ export function pairingEmail(item: BaseItem, dateHeader: string | null = null): 
   const emailDay = item.date ? senderDay(emailTime, dateHeader) : isoDay(emailTime);
   const amountText = single(item, "amount");
   const amount = amountText === null ? Number.NaN : Number(amountText);
+  const feeText = single(item, "fee");
+  const fee = feeText === null ? Number.NaN : Number(feeText);
   const paid = single(item, "paidDate");
   const due = item.picked.dueNow ? emailDay : single(item, "dueDate");
   return {
@@ -182,12 +216,21 @@ export function pairingEmail(item: BaseItem, dateHeader: string | null = null): 
     billerName: item.biller?.name ?? null,
     names: plainWords(`${item.subject ?? ""} ${item.from[0]?.name ?? ""}`),
     amountCents: Number.isFinite(amount) ? Math.round(amount * 100) : null,
+    feeCents: Number.isFinite(fee) && fee >= 0 ? Math.round(fee * 100) : null,
+    invoiceNo: numberKey(single(item, "invoiceNo")),
+    accountNo: numberKey(single(item, "accountNo")),
     notBill: item.review?.state === "not-bill",
     emailTime,
     emailDay,
     paidDay: paid && DAY.test(paid) ? paid : null,
     dueDay: due && DAY.test(due) ? due : null,
   };
+}
+
+/** An invoice or account number to compare: letters and digits only, upper case ("7345698-1762-4" is "734569817624"); null when nothing is left. */
+export function numberKey(text: string | null): string | null {
+  const key = text?.toUpperCase().replace(/[^\p{L}\p{N}]/gu, "") ?? "";
+  return key === "" ? null : key;
 }
 
 /** How much of a biller's name a payment service's receipt must show: PayPal cuts "Waste Management National Services" to "Waste Management Nat...". */
@@ -208,6 +251,11 @@ export function namesBiller(names: string, billerName: string | null): boolean {
     at = names.indexOf(key, at + 1);
   }
   return false;
+}
+
+/** The day `days` after `day` ("2026-10-06"). */
+function addDays(day: string, days: number): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
 
 /** Whole days between two days ("2026-10-06"), either way round. */
@@ -232,6 +280,13 @@ export function fitsFeeBand(paymentCents: number, billCents: number): boolean {
   return 100 * (paymentCents - billCents) <= Math.max(100 * FEE_FLOOR_CENTS, FEE_PERCENT * billCents);
 }
 
+/** Whether a payment fits a bill of `billCents`: exactly, less the fee its email states; else within the fee band. */
+export function paymentFits(payment: PairingEmail, billCents: number): boolean {
+  if (payment.amountCents === null) return false;
+  if (payment.feeCents !== null) return payment.amountCents - payment.feeCents === billCents;
+  return fitsFeeBand(payment.amountCents, billCents);
+}
+
 /** The payment's day: its paid date, else its email date. */
 export function paymentDay(email: PairingEmail): string {
   return email.paidDay ?? email.emailDay;
@@ -248,7 +303,7 @@ function wasLate(bill: PairingEmail, day: string, emails: readonly PairingEmail[
       other.id !== bill.id &&
       other.kind === "bill" &&
       other.billerId === bill.billerId &&
-      other.amountCents !== null &&
+      (other.amountCents ?? 0) > 0 &&
       !other.notBill &&
       other.emailDay > bill.emailDay &&
       other.emailDay <= day,
@@ -256,34 +311,52 @@ function wasLate(bill: PairingEmail, day: string, emails: readonly PairingEmail[
 }
 
 export function pairPayments(input: PairingInput): PairingResult {
-  const { emails, fixed, reported, startDate } = input;
+  const { emails, fixed, reported, startDate, today } = input;
   const byId = new Map(emails.map((email) => [email.id, email]));
   const payments = emails.filter(isPayment);
   const result: PairingResult = { payments: new Map(), paidBy: new Map() };
 
-  const settle = (payment: PairingEmail, bill: PairingEmail | null, how: PairingHow | null, locked: boolean, billMissing = false, staleChoice = false) => {
+  /**
+   * Records what a payment pays: `bills` (none for Paid on its own or while it
+   * needs a bill), oldest first. The oldest is its bill; the others are what
+   * it also pays (contract v3). The fee is the one the payment email states;
+   * when it states none, the payment less all the bills when more. It belongs
+   * to the oldest; each bill gets its amount, oldest first, and the last
+   * whatever is left (a person's part payment, or an overpayment the biller
+   * carries as a credit: it stays on this bill, never a fee and never the next
+   * bill's, owner 2026-11-05).
+   */
+  const settle = (payment: PairingEmail, bills: readonly PairingEmail[], how: PairingHow | null, locked: boolean, billMissing = false, staleChoice = false) => {
     const pay = payment.amountCents!;
-    let feeCents = 0;
-    let paidLate = false;
-    let beforeStart = false;
-    if (bill) {
-      if (bill.amountCents !== null && pay > bill.amountCents) feeCents = pay - bill.amountCents;
-      paidLate = wasLate(bill, paymentDay(payment), emails);
-      beforeStart = startDate !== null && bill.emailDay < startDate;
-      result.paidBy.set(bill.id, payment.id);
-    }
+    const ordered = [...bills].sort(byAge);
+    const day = paymentDay(payment);
+    const total = ordered.reduce((sum, bill) => sum + (bill.amountCents ?? 0), 0);
+    // A bill whose amount is not known (on a locked pairing) leaves a fee the email does not state unknown: 0, as before.
+    const known = ordered.every((bill) => bill.amountCents !== null);
+    const feeCents =
+      ordered.length === 0 ? 0 : payment.feeCents !== null ? Math.min(payment.feeCents, pay) : known && pay > total ? pay - total : 0;
+    let left = pay - feeCents;
+    const shares = ordered.map((bill, i) => {
+      const share = i === ordered.length - 1 ? left : Math.min(Math.max(bill.amountCents ?? 0, 0), left);
+      left -= share;
+      return share;
+    });
+    for (const bill of ordered) result.paidBy.set(bill.id, payment.id);
+    const main = ordered[0];
     result.payments.set(payment.id, {
       paymentId: payment.id,
-      billId: bill?.id ?? (billMissing ? fixed.get(payment.id)!.billId : null),
+      billId: main?.id ?? (billMissing ? fixed.get(payment.id)!.billId : null),
       how,
       locked,
       needsBill: how === null,
-      paidLate,
+      paidLate: main ? wasLate(main, day, emails) : false,
       feeCents,
-      baseCents: pay - feeCents,
+      baseCents: main ? shares[0]! : pay,
+      also: ordered.slice(1).map((bill, i) => ({ billId: bill.id, cents: shares[i + 1]!, paidLate: wasLate(bill, day, emails) })),
       billMissing,
-      beforeStart,
+      beforeStart: startDate !== null && ordered.some((bill) => bill.emailDay < startDate),
       staleChoice,
+      waitingUntil: null,
       duplicateOf: null,
       maybeDuplicateOf: null,
     });
@@ -294,50 +367,122 @@ export function pairPayments(input: PairingInput): PairingResult {
     const choice = fixed.get(payment.id);
     if (!choice?.locked) continue;
     if (choice.billId === null) {
-      settle(payment, null, "own", true);
+      settle(payment, [], "own", true);
       continue;
     }
     const how: PairingHow = choice.person ? "person" : "auto";
-    const bill = byId.get(choice.billId);
-    if (bill) settle(payment, bill, how, true);
-    else settle(payment, null, how, true, true);
+    const chosen = [choice.billId, ...choice.alsoBillIds].map((id) => byId.get(id));
+    if (chosen.every((bill) => bill !== undefined)) settle(payment, chosen as PairingEmail[], how, true);
+    else settle(payment, [], how, true, true);
   }
-  // Then a person's choices, earliest first, each kept only while its bill can still be paid and
-  // is not taken already; otherwise the payment needs a bill again (the choice is ignored, not removed).
+  // Then a person's choices, earliest first, each kept only while every bill in it can still be paid
+  // and is not taken already; otherwise the payment needs a bill again (the choice is ignored, not removed).
   const picked = payments
     .filter((payment) => fixed.get(payment.id)?.locked === false)
     .sort((a, b) => fixed.get(a.id)!.chosenAt.localeCompare(fixed.get(b.id)!.chosenAt) || a.id.localeCompare(b.id));
   for (const payment of picked) {
     const choice = fixed.get(payment.id)!;
     if (choice.billId === null) {
-      settle(payment, null, "own", false);
+      settle(payment, [], "own", false);
       continue;
     }
-    const bill = byId.get(choice.billId);
-    if (bill && isPayableBill(bill) && !reported.has(bill.id) && !result.paidBy.has(bill.id)) settle(payment, bill, "person", false);
-    else settle(payment, null, null, false, false, true);
+    const chosen = [choice.billId, ...choice.alsoBillIds].map((id) => byId.get(id));
+    const usable = (bill: PairingEmail | undefined): bill is PairingEmail =>
+      bill !== undefined && isPayableBill(bill) && !reported.has(bill.id) && !result.paidBy.has(bill.id);
+    if (chosen.every(usable)) settle(payment, chosen, "person", false);
+    else settle(payment, [], null, false, false, true);
   }
 
-  // Then per biller, payments in date order each take the oldest fitting candidate.
-  const open = payments
-    .filter((payment) => !result.payments.has(payment.id))
-    .sort((a, b) => paymentDay(a).localeCompare(paymentDay(b)) || byAge(a, b));
+  // Then the automatic pairing, in payment date order.
+  const open = () =>
+    payments.filter((payment) => !result.payments.has(payment.id)).sort((a, b) => paymentDay(a).localeCompare(paymentDay(b)) || byAge(a, b));
   const bills = emails.filter(isPayableBill).sort(byAge);
-  for (const payment of open) {
-    const day = paymentDay(payment);
-    const bill =
-      payment.billerId === null
-        ? undefined
-        : bills.find(
-            (candidate) =>
-              candidate.billerId === payment.billerId &&
-              candidate.emailDay <= day &&
-              !result.paidBy.has(candidate.id) &&
-              !reported.has(candidate.id) &&
-              fitsFeeBand(payment.amountCents!, candidate.amountCents!),
-          );
-    if (bill) settle(payment, bill, "auto", false);
-    else settle(payment, null, null, false);
+  /** A bill dated on or before the payment's day. */
+  const before = (payment: PairingEmail, bill: PairingEmail) => bill.emailDay <= paymentDay(payment);
+  /** A bill that came in after the payment, at most BILL_WAIT_DAYS later. */
+  const after = (payment: PairingEmail, bill: PairingEmail) =>
+    bill.emailDay > paymentDay(payment) && bill.emailDay <= addDays(paymentDay(payment), BILL_WAIT_DAYS);
+  /** An unpaid bill of the payment's biller that asks for money, dated as `when` says: one it could pay. */
+  const unpaid = (payment: PairingEmail, bill: PairingEmail, when: typeof before) =>
+    payment.billerId !== null &&
+    bill.billerId === payment.billerId &&
+    bill.amountCents! > 0 &&
+    when(payment, bill) &&
+    !result.paidBy.has(bill.id) &&
+    !reported.has(bill.id);
+  const candidate = (payment: PairingEmail, bill: PairingEmail, when: typeof before) => unpaid(payment, bill, when) && paymentFits(payment, bill.amountCents!);
+  /** The unpaid bills a payment could pay together: its biller's, before it or within its days after, oldest first. */
+  const waitingFor = (payment: PairingEmail) => bills.filter((bill) => unpaid(payment, bill, before) || unpaid(payment, bill, after));
+  /**
+   * The runs that end at the unpaid bill `last` and together fit the payment, shortest first: `last` with the
+   * biller's bill right before it, then the one before that, up to AUTO_BILLS_MAX bills. The walk back stops
+   * at the first bill that is not still unpaid (paid by another payment, reported by OurHome, or asking for
+   * nothing): what is left of the payment only goes to the bill right before, never past a paid one to an
+   * older bill (owner, 2026-11-05).
+   */
+  const runsEndingAt = (payment: PairingEmail, last: PairingEmail) => {
+    const own = bills.filter((bill) => bill.billerId === payment.billerId && (before(payment, bill) || after(payment, bill)));
+    const runs: PairingEmail[][] = [];
+    const run = [last];
+    for (let i = own.indexOf(last) - 1; i >= 0 && run.length < AUTO_BILLS_MAX; i--) {
+      const bill = own[i]!;
+      if (!unpaid(payment, bill, before)) break;
+      run.unshift(bill);
+      if (paymentFits(payment, run.reduce((sum, one) => sum + one.amountCents!, 0))) runs.push([...run]);
+    }
+    return runs;
+  };
+  // First, a payment that names a bill's invoice number takes that bill (the city's receipts do), so an
+  // older unpaid bill of the same amount is not paid by mistake (owner, 2026-11-05). When that bill alone
+  // is less than the payment, it is the current invoice paid with what was past due: it takes the named
+  // bill with the unpaid bills right before it, when together they fit (owner, 2026-11-05).
+  for (const payment of open()) {
+    if (payment.invoiceNo === null) continue;
+    const named = bills.find((bill) => bill.invoiceNo === payment.invoiceNo && unpaid(payment, bill, before));
+    if (!named) continue;
+    const pays = paymentFits(payment, named.amountCents!) ? [named] : runsEndingAt(payment, named)[0];
+    if (pays) settle(payment, pays, "auto", false);
+  }
+  // Then per biller, each of the rest takes the oldest fitting candidate.
+  for (const payment of open()) {
+    const bill = bills.find((bill) => candidate(payment, bill, before));
+    if (bill) settle(payment, [bill], "auto", false);
+  }
+  // Then a payment made before its bill email came in takes the first fitting bill after it (the one
+  // naming its invoice number first). Only after every payment has had the bills before it, so a late
+  // payment whose bill email is missing never takes the bill another payment pays (owner, 2026-11-05).
+  for (const payment of open()) {
+    const later = bills.filter((bill) => candidate(payment, bill, after));
+    const bill = later.find((bill) => payment.invoiceNo !== null && bill.invoiceNo === payment.invoiceNo) ?? later[0];
+    if (bill) settle(payment, [bill], "auto", false);
+  }
+  // Then one payment for several bills (owner, 2026-11-05): when no one bill fits, 2 then up to
+  // AUTO_BILLS_MAX of the biller's bills in a row, all unpaid (before the payment, or within its days
+  // after), that together fit it. Only bills in a row, never a pick of any few, so bills that happen to
+  // add up are not taken. A payment is most often the current invoice with what was past due on it (owner,
+  // 2026-11-05), so the run ends at the newest bill it can: the one naming its invoice number, then the
+  // newest bill before it and back from there, then the bills after it. So an old bill whose payment
+  // email is missing is not taken in place of the current one.
+  for (const payment of open()) {
+    const waiting = waitingFor(payment);
+    const lastFirst = [
+      ...waiting.filter((bill) => payment.invoiceNo !== null && bill.invoiceNo === payment.invoiceNo),
+      ...waiting.filter((bill) => before(payment, bill)).reverse(),
+      ...waiting.filter((bill) => after(payment, bill)),
+    ];
+    for (const last of lastFirst) {
+      const run = runsEndingAt(payment, last)[0];
+      if (run) {
+        settle(payment, run, "auto", false);
+        break;
+      }
+    }
+  }
+  // The rest need a bill; one with a biller, still within its days, waits for its bill email instead.
+  for (const payment of open()) {
+    settle(payment, [], null, false);
+    const until = addDays(paymentDay(payment), BILL_WAIT_DAYS);
+    if (payment.billerId !== null && today <= until) result.payments.set(payment.id, { ...result.payments.get(payment.id)!, needsBill: false, waitingUntil: until });
   }
 
   markDuplicates(payments, fixed, result);

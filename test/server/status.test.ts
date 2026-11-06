@@ -10,14 +10,18 @@ import type { StatusResponse } from "../../src/shared/api.js";
 import type { InvoiceRecord } from "../../src/shared/invoice.js";
 import { call, json, makeServer, rawEmail, saveEmail, sessionCookie, setUp, type TestServer } from "./helpers.js";
 
-const reading = vi.hoisted(() => ({ fail: null as string | null }));
+const reading = vi.hoisted(() => ({ fail: null as string | null, missing: [] as string[] }));
 vi.mock("../../src/mailbox.js", async (original) => {
   const real = await original<typeof import("../../src/mailbox.js")>();
   return {
     ...real,
-    captureMailbox: vi.fn(async () => {
+    captureMailbox: vi.fn(async (mailbox: import("../../src/mailbox.js").MailboxToRead) => {
       if (reading.fail) throw new real.MailboxError(reading.fail);
-      return { inFolder: 2, alreadyCaptured: 1, captured: 1, failed: 0, tooLarge: 0 };
+      return mailbox.folders.map(({ folder }) =>
+        reading.missing.includes(folder)
+          ? { folder, problem: `There is no folder called "${folder}".` }
+          : { folder, summary: { inFolder: 2, alreadyCaptured: 1, captured: 1, failed: 0, tooLarge: 0, leftOut: 0 } },
+      );
     }),
   };
 });
@@ -29,6 +33,7 @@ beforeEach(async () => {
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   reading.fail = null;
+  reading.missing = [];
   server = makeServer();
   cookie = await setUp(server.app);
 });
@@ -63,6 +68,30 @@ describe("a mailbox's reads", () => {
       failingSince: null,
       lastOkAt: "2026-10-30T09:30:00.000Z",
       lastCheck: { ok: true, message: "1 new, 1 captured before", captured: 1 },
+    });
+  });
+
+  it("with several folders, says how each went, and one missing folder is a problem but the others are still read", async () => {
+    const { mailboxes } = server.service;
+    const [listed] = (await status()).mailboxes;
+    const res = await call(server.app, `/api/mailboxes/${listed!.id}`, {
+      method: "PUT",
+      cookie,
+      body: { name: "Proton bills", provider: "proton-bridge", host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me", folders: ["Folders/Bills", "Labels/Receipts"] },
+    });
+    expect(res.status).toBe(200);
+
+    expect(await mailboxes.readAll()).toEqual({ read: 1, failed: 0, captured: 2 });
+    let [mailbox] = (await status()).mailboxes;
+    expect(mailbox!.lastCheck).toMatchObject({ ok: true, message: "Folders/Bills: 1 new, 1 captured before; Labels/Receipts: 1 new, 1 captured before", captured: 2 });
+
+    reading.missing = ["Labels/Receipts"];
+    expect(await mailboxes.readAll()).toEqual({ read: 0, failed: 1, captured: 1 });
+    [mailbox] = (await status()).mailboxes;
+    expect(mailbox!.lastCheck).toMatchObject({
+      ok: false,
+      message: 'Folders/Bills: 1 new, 1 captured before; Labels/Receipts: There is no folder called "Labels/Receipts".',
+      captured: 1,
     });
   });
 });

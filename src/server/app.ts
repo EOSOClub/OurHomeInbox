@@ -79,7 +79,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
       },
     }),
   );
-  app.route("/api", captureRoutes({ store: deps.store, db: deps.db, mailboxes, cache }));
+  app.route("/api", captureRoutes({ store: deps.store, db: deps.db, mailboxes, cache, now }));
   app.route(
     "/api",
     settingsRoutes({

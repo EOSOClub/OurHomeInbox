@@ -215,8 +215,10 @@ export interface MailboxInfo {
   /** Its folder under data/mail, and its part of each email's address. Kept when renamed. */
   slug: string;
   provider: Provider;
-  /** The folder in the mailbox that is read. */
-  folder: string;
+  /** The folders in the mailbox that are read, in the order they were listed. */
+  folders: string[];
+  /** Folders or labels to leave out: an email also in one of them is not captured. */
+  skipFolders: string[];
   imap: {
     host: string;
     port: number;
@@ -255,7 +257,10 @@ export interface RemovedMailbox {
   name: string;
   slug: string;
   provider: Provider;
-  folder: string;
+  /** The folders it read; none when not known (a mailbox found on disk whose emails name no folder). */
+  folders: string[];
+  /** The folders it left out. */
+  skipFolders: string[];
   /** Its server and login, or null when they are not known (a mailbox removed before removed ones were kept, found on disk). */
   imap: { host: string; port: number; security: Security; username: string } | null;
   /** How many captured emails come back when it is restored. */
@@ -281,7 +286,10 @@ export interface MailboxInput {
   security: Security;
   username: string;
   password?: string;
-  folder: string;
+  /** At least one; each listed once. */
+  folders: string[];
+  /** Folders to leave out, none of them also read. Left out when changing a mailbox: the saved ones are kept. */
+  skipFolders?: string[];
   enabled?: boolean;
 }
 
@@ -294,17 +302,18 @@ export interface MailboxTestRequest {
   security: Security;
   username: string;
   password?: string;
-  folder: string;
+  folders: string[];
+  /** Folders to leave out: each is opened too, to show it is there. */
+  skipFolders?: string[];
 }
 
 export interface MailboxTestResponse {
+  /** True when it signed in and every folder asked for exists. */
   ok: boolean;
-  /** What happened, in plain words. */
+  /** What happened, in plain words, with each folder's message count or problem. */
   message: string;
   /** Every folder in the mailbox, when it could sign in. */
   folders: string[];
-  /** Messages in the chosen folder, when it exists. */
-  messages: number | null;
 }
 
 /** The install's settings (config.yml). Never contains a secret. */

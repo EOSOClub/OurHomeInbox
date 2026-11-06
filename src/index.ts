@@ -112,9 +112,10 @@ function pairingNote(payment: PaymentInfo | null): string {
     return ` [bill: ${paid}${payment.ourhome ? `; OurHome reported it ${payment.ourhome.change} ${payment.ourhome.at}` : ""}]`;
   }
   if (payment.duplicateOf) return ` [payment: duplicate of ${payment.duplicateOf.id}]`;
+  if (payment.waitingUntil) return ` [payment: waiting for its bill email until ${payment.waitingUntil}]`;
   if (payment.needsBill) return ` [payment: needs a bill${payment.maybeDuplicateOf ? `; may repeat ${payment.maybeDuplicateOf.id}` : ""}]`;
   if (payment.how === "own") return ` [payment: paid on its own${payment.locked ? ", locked" : ""}]`;
-  const bill = payment.bill ? `pays ${payment.bill.id}` : "its bill's email is missing";
+  const bill = payment.bill ? `pays ${[payment.bill, ...payment.alsoBills].map((b) => b.id).join(" and ")}` : "its bill's email is missing";
   return ` [payment: ${bill}, chosen ${payment.how === "person" ? "by a person" : "automatically"}${payment.paidLate ? ", paid late" : ""}${payment.locked ? ", locked" : ""}]`;
 }
 

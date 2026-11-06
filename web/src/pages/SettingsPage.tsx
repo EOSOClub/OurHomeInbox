@@ -54,7 +54,7 @@ function MailboxRow({ mailbox, canEdit }: { mailbox: MailboxInfo; canEdit: boole
       <p className={`mt-1 text-sm ${problem ? "font-medium text-warn" : "text-muted"}`}>{lastCheckLine(mailbox)}</p>
       <dl className="mt-2 divide-y divide-line">
         <DetailRow label="Reads">
-          <span className="font-mono text-sm">{mailbox.folder}</span>
+          <span className="font-mono text-sm wrap-anywhere">{mailbox.folders.join(", ")}</span>
         </DetailRow>
         <DetailRow label="Server">
           <span className="wrap-anywhere">
@@ -132,7 +132,12 @@ function RemovedMailboxes({ removed, canEdit }: { removed: RemovedMailbox[]; can
             <div className="min-w-0">
               <p className="font-medium wrap-anywhere">{mailbox.name}</p>
               <p className="text-sm text-muted wrap-anywhere">
-                {emailCount(mailbox.emails)} kept{mailbox.folder ? <>, from <span className="font-mono">{mailbox.folder}</span></> : null}
+                {emailCount(mailbox.emails)} kept
+                {mailbox.folders.length > 0 ? (
+                  <>
+                    , from <span className="font-mono">{mailbox.folders.join(", ")}</span>
+                  </>
+                ) : null}
               </p>
             </div>
             {canEdit ? (

@@ -34,18 +34,21 @@ export type BaseItem = Omit<CaptureListItem, "handoff" | "payment">;
 /**
  * A payment's pairing, as the hand-off needs it:
  * - own: Paid on its own; it goes with no reference.
+ * - waiting-bill: paid before its bill email came in; it waits for one until `until`.
  * - needs-bill: no bill fits and nobody chose one.
  *   `staleChoice`: someone chose a bill that can no longer be used.
  *   `maybeDuplicateOf`: the payment it may repeat, in words ("the Midco payment email of 2026-08-27").
  * - duplicate: a second email about the payment `of` names, in the same words.
  * - bill-missing: its chosen or locked bill's email cannot be read.
- * - paired: it pays a bill. `billGoes` is true when that bill goes to OurHome
- *   (it is numbered first, so it always has the lower number). `locked`: the
+ * - paired: it pays a bill (and with `alsoPays`, others too). `billGoes` is
+ *   true when every bill it pays goes to OurHome (they are numbered first, so
+ *   they always have the lower numbers). `locked`: the
  *   payment has already been sent, so it no longer waits for its bill.
  */
 export type PaymentHandoff =
   | { pairing: "own" }
   | { pairing: "needs-bill"; staleChoice?: boolean; maybeDuplicateOf?: string }
+  | { pairing: "waiting-bill"; until: string }
   | { pairing: "duplicate"; of: string }
   | { pairing: "bill-missing" }
   | {
@@ -57,6 +60,8 @@ export type PaymentHandoff =
       billBeforeStart: boolean;
       billGoes: boolean;
       locked?: boolean;
+      /** Contract v3: the other bills it pays, oldest first (their references, the part of the payment for each, late or not). None when it pays one. */
+      alsoPays?: ReadonlyArray<{ reference: string; cents: number; paidLate: boolean }>;
     };
 
 /** What the rules look at: an email as the list has it, its Message-ID, and the household's settings. */
@@ -176,6 +181,13 @@ export function handoffDocument(input: HandoffInput): HandoffDocument {
   if (paired) {
     set("reference", paired.reference);
     if (paired.paidLate) set("paidLate", true);
+    // Contract v3: the other bills a payment for several pays, oldest first, each with its part (no fee).
+    if (paired.alsoPays && paired.alsoPays.length > 0) {
+      set(
+        "alsoPays",
+        paired.alsoPays.map(({ reference, cents, paidLate }) => ({ reference, amount: cents / 100, ...(paidLate ? { paidLate: true as const } : {}) })),
+      );
+    }
   }
   return doc;
 }
@@ -193,6 +205,11 @@ export const PAIRING_REASONS = {
 /** Why a second email about a payment is never sent. `of` names the payment, "the Waste Management payment email of 2026-07-11". */
 export function duplicateReason(of: string): string {
   return `A second email about ${of}: it is not sent, so OurHome counts the payment once. If it is a separate payment, choose its bill or mark it Paid on its own.`;
+}
+
+/** Why a payment made before its bill email came in waits. `until` is the last day it waits ("2026-11-19"). */
+export function waitingReason(until: string): string {
+  return `Waits for its bill email: it was paid before the bill came in. If no bill email fits it by ${until}, it will need a bill. To pick one now, use Choose a bill.`;
 }
 
 /** Needs a bill, naming the payment it may repeat. */
@@ -236,6 +253,7 @@ function checkDecision(input: HandoffInput): HandoffDecision {
   if (item.picked.kind === "receipt") {
     const payment = input.payment ?? { pairing: "needs-bill" };
     if (payment.pairing === "duplicate") return never(duplicateReason(payment.of));
+    if (payment.pairing === "waiting-bill") return waits(waitingReason(payment.until));
     if (payment.pairing === "needs-bill") {
       if (payment.staleChoice) return waits(PAIRING_REASONS.staleChoice);
       return waits(payment.maybeDuplicateOf ? maybeDuplicateReason(payment.maybeDuplicateOf) : PAIRING_REASONS.needsBill);

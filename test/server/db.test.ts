@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { hashPassword, LoginLimiter, verifyPassword } from "../../src/server/auth.js";
-import { openDatabase, SCHEMA_VERSION } from "../../src/server/db.js";
+import { DatabaseSync } from "node:sqlite";
+import { MIGRATIONS, openDatabase, SCHEMA_VERSION } from "../../src/server/db.js";
 
 let dir: string;
 
@@ -31,6 +32,8 @@ describe("openDatabase", () => {
       "handoff_connections",
       "handoff_offers",
       "households",
+      "mailbox_folders",
+      "mailbox_skip_folders",
       "mailboxes",
       "ourhome_changes",
       "payment_pairings",
@@ -51,6 +54,31 @@ describe("openDatabase", () => {
     const second = openDatabase(path);
     expect(second.get<{ n: number }>("SELECT count(*) AS n FROM households")?.n).toBe(1);
     second.close();
+  });
+
+  it("moves each mailbox's folder into its folder list, keeping where its mail is (schema 12)", () => {
+    const path = join(dir, "app.db");
+    const old = new DatabaseSync(path);
+    for (const [i, sql] of MIGRATIONS.slice(0, 11).entries()) {
+      old.exec(sql);
+      old.exec(`PRAGMA user_version = ${i + 1}`);
+    }
+    const stamp = "2026-10-29T00:00:00.000Z";
+    old.exec(`INSERT INTO households (id, name, created_at) VALUES (1, 'Home', '${stamp}')`);
+    old.exec(
+      `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, folder, created_at, updated_at)
+       VALUES (1, 'Proton bills', 'proton-bills', 'proton-bridge', 'h', 1, 'none', 'u', 'Folders/Bills', '${stamp}', '${stamp}'),
+              (1, 'Found', 'found', 'proton-bridge', '', 0, 'none', '', '', '${stamp}', '${stamp}')`,
+    );
+    old.close();
+
+    const db = openDatabase(path);
+    expect(db.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(db.all("SELECT m.name, f.folder, f.slug, f.position, f.removed_at FROM mailbox_folders f JOIN mailboxes m ON m.id = f.mailbox_id")).toEqual([
+      { name: "Proton bills", folder: "Folders/Bills", slug: "proton-bills", position: 0, removed_at: null },
+    ]);
+    expect(db.all<{ name: string }>("PRAGMA table_info(mailboxes)").map((c) => c.name)).not.toContain("folder");
+    db.close();
   });
 
   it("refuses a database from a newer version", () => {

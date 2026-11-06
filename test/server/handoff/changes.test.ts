@@ -285,7 +285,10 @@ describe("POST /api/handoff/changes", () => {
 
     await report({ changes: [{ messageId: "<m2@water.example>", change: "removed", at: "2026-11-12T08:00:00.000Z" }] });
     expect((await detail(2)).payment).toMatchObject({ ourhome: { change: "removed" } });
-    expect((await detail(3)).payment).toMatchObject({ bill: null, needsBill: true });
+    // Paid Nov 10 with no bill left, so it first waits for a bill email until Nov 24, then needs a bill.
+    expect((await detail(3)).payment).toMatchObject({ bill: null, needsBill: false, waitingUntil: "2026-11-24" });
+    server.clock.now = new Date("2026-11-25T12:00:00Z");
+    expect((await detail(3)).payment).toMatchObject({ bill: null, needsBill: true, waitingUntil: null });
     // The picker shows both, and neither can be picked.
     const list = await json<{ bills: Array<{ id: string; state: string; canPick: boolean }> }>(await send("GET", `/api/captures/${id(3)}/bill-choices`));
     expect(list.bills.map((b) => [b.id, b.state, b.canPick])).toEqual([

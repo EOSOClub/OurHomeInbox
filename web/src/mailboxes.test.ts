@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { MailboxInfo } from "../../src/shared/api";
-import { checkConnection, checkingLine, checkMailboxForm, EMPTY_MAILBOX_FORM, formFromMailbox, lastCheckLine, type MailboxForm } from "./mailboxes";
+import { addFolder, checkConnection, checkingLine, checkMailboxForm, EMPTY_MAILBOX_FORM, formFromMailbox, lastCheckLine, type MailboxForm } from "./mailboxes";
 
 const good: MailboxForm = {
   ...EMPTY_MAILBOX_FORM,
@@ -12,7 +12,7 @@ const good: MailboxForm = {
   security: "none",
   username: " bills@example.com ",
   password: " pass with spaces ",
-  folder: " Folders/Bills ",
+  folders: ["Folders/Bills"],
 };
 
 const saved: MailboxInfo = {
@@ -20,7 +20,8 @@ const saved: MailboxInfo = {
   name: "Bills",
   slug: "bills",
   provider: "proton-bridge",
-  folder: "Labels/Bill",
+  folders: ["Labels/Bill"],
+  skipFolders: ["Labels/Skip"],
   imap: { host: "protonmail-bridge", port: 143, security: "none", username: "u@example.com", passwordSet: true, passwordProblem: null },
   enabled: true,
   lastCheck: null,
@@ -42,7 +43,8 @@ describe("checkMailboxForm", () => {
         security: "none",
         username: "bills@example.com",
         password: " pass with spaces ",
-        folder: "Folders/Bills",
+        folders: ["Folders/Bills"],
+        skipFolders: [],
         enabled: true,
       },
     });
@@ -57,7 +59,7 @@ describe("checkMailboxForm", () => {
         security: "Choose how the connection is protected.",
         username: "Enter the IMAP username.",
         password: "Enter the IMAP password.",
-        folder: "Enter the folder to read, like INBOX or Folders/Bills.",
+        folders: "Add a folder to read, like INBOX or Folders/Bills.",
       },
       input: null,
     });
@@ -66,7 +68,13 @@ describe("checkMailboxForm", () => {
   it("keeps a saved password when none is typed: it is left out of the request", () => {
     const { input } = checkMailboxForm(formFromMailbox(saved), saved);
     expect(input).not.toHaveProperty("password");
-    expect(input).toMatchObject({ name: "Bills", port: 143, folder: "Labels/Bill" });
+    expect(input).toMatchObject({ name: "Bills", port: 143, folders: ["Labels/Bill"] });
+  });
+
+  it("counts a folder still in the box, trimmed, so saving before Enter does not lose it", () => {
+    expect(checkMailboxForm({ ...good, folderDraft: " INBOX " }, null).input?.folders).toEqual(["Folders/Bills", "INBOX"]);
+    expect(checkMailboxForm({ ...good, folders: [], folderDraft: "INBOX" }, null).input?.folders).toEqual(["INBOX"]);
+    expect(checkMailboxForm({ ...good, folderDraft: "Folders/Bills" }, null).errors.folders).toBe('"Folders/Bills" is already in the list.');
   });
 
   it.each([
@@ -78,6 +86,49 @@ describe("checkMailboxForm", () => {
     const { errors, input } = checkMailboxForm({ ...good, ...change }, null);
     expect(input).toBeNull();
     expect(errors[field as keyof MailboxForm]).toContain(message);
+  });
+});
+
+describe("addFolder", () => {
+  it("adds the typed folder, trimmed, and empties the box", () => {
+    expect(addFolder({ ...good, folderDraft: "  Labels/Bill " })).toEqual({ form: { ...good, folders: ["Folders/Bills", "Labels/Bill"], folderDraft: "" }, error: null });
+  });
+
+  it("adds a Proton folder typed as Proton shows it as the Bridge's path, and sees it is already listed", () => {
+    expect(addFolder({ ...good, folderDraft: "Finance/Receipts" }).form.folders).toEqual(["Folders/Bills", "Folders/Finance/Receipts"]);
+    expect(addFolder({ ...good, folderDraft: "Bills" }).error).toBe('"Folders/Bills" is already in the list.');
+  });
+
+  it("does nothing for an empty box", () => {
+    expect(addFolder({ ...good, folderDraft: "   " })).toEqual({ form: { ...good, folderDraft: "" }, error: null });
+  });
+
+  it.each([
+    ["Folders/Bills", '"Folders/Bills" is already in the list.'],
+    ["x".repeat(301), "That folder name is too long."],
+  ])("keeps %s in the box and says why it cannot be added", (folderDraft, error) => {
+    const form = { ...good, folderDraft };
+    expect(addFolder(form)).toEqual({ form, error });
+  });
+
+  it("adds a folder to leave out the same way, and never lets one folder be in both lists", () => {
+    const left = addFolder({ ...good, skipDraft: " labels/skip " }, "skipFolders");
+    expect(left).toEqual({ form: { ...good, skipFolders: ["Labels/skip"], skipDraft: "" }, error: null });
+    expect(addFolder({ ...good, skipDraft: "Bills" }, "skipFolders").error).toBe('"Folders/Bills" is read by this mailbox, so it cannot also be left out.');
+    expect(addFolder({ ...left.form, folderDraft: "Labels/skip" }).error).toBe('"Labels/skip" is left out, so it cannot also be read.');
+  });
+
+  it("keeps the saved folders to leave out, and counts one still in its box", () => {
+    expect(checkMailboxForm(formFromMailbox(saved), saved).input?.skipFolders).toEqual(["Labels/Skip"]);
+    expect(checkMailboxForm({ ...good, skipDraft: "Labels/Skip" }, null).input?.skipFolders).toEqual(["Labels/Skip"]);
+    expect(checkMailboxForm({ ...good, skipDraft: "Folders/Bills" }, null).errors.skipFolders).toBe(
+      '"Folders/Bills" is read by this mailbox, so it cannot also be left out.',
+    );
+  });
+
+  it("stops at 20 folders", () => {
+    const full = { ...good, folders: Array.from({ length: 20 }, (_, i) => `F${i}`), folderDraft: "One more" };
+    expect(addFolder(full).error).toBe("A mailbox can read up to 20 folders.");
   });
 });
 

@@ -53,9 +53,11 @@ const API = `/api/captures/${PAYMENT_ID}`;
 const PAIRED: PaymentSide = {
   role: "payment",
   bill: { id: "proton-bills/1700000000/1", date: "2026-10-06T12:00:00.000Z", amount: 80 },
+  alsoBills: [],
   how: "auto",
   paidLate: false,
   needsBill: false,
+  waitingUntil: null,
   staleChoice: false,
   locked: false,
   duplicateOf: null,
@@ -64,9 +66,11 @@ const PAIRED: PaymentSide = {
 const NEEDS_BILL: PaymentSide = {
   role: "payment",
   bill: null,
+  alsoBills: [],
   how: null,
   paidLate: false,
   needsBill: true,
+  waitingUntil: null,
   staleChoice: false,
   locked: false,
   duplicateOf: null,
@@ -101,6 +105,7 @@ const CHOICES: BillChoicesResponse = {
   biller: "City Water",
   all: false,
   locked: false,
+  paymentAmount: null,
   bills: [
     choice(2, "2026-11-06", { dueDate: "2026-11-20", invoiceNo: "W-1102" }),
     choice(1, "2026-10-06", { state: "paired", canPick: false, reason: "Another payment already pays this bill.", paidByDate: "2026-10-08T12:00:00.000Z" }),
@@ -112,6 +117,14 @@ const CHOICES: BillChoicesResponse = {
 const text = () => document.body.textContent ?? "";
 
 describe("a payment's line", () => {
+  it("names every bill a payment for several pays, oldest first, each a link", () => {
+    const also = { id: "proton-bills/1700000000/2", date: "2026-11-06T12:00:00.000Z", amount: 80 };
+    show(<PaymentEditor detail={detail({ ...PAIRED, alsoBills: [also] })} />);
+    expect(text()).toMatch(/Pays the Oct 6(, 2026)? and Nov 6(, 2026)? bills/);
+    expect(screen.getByRole("link", { name: /^Open the Nov 6(, 2026)? bill$/ }).getAttribute("href")).toBe("/mail/proton-bills/1700000000/2");
+    expect(text()).toContain("the oldest unpaid bills of this biller, which together fit the amount");
+  });
+
   it("says which bill it pays, as a link, and that it was paid late when so", () => {
     show(<PaymentEditor detail={detail({ ...PAIRED, paidLate: true })} />);
     const link = screen.getByRole("link", { name: /^Open the Oct 6(, 2026)? bill$/ });
@@ -126,6 +139,14 @@ describe("a payment's line", () => {
     render(<PaymentSummary payment={PAIRED} />);
     expect(text()).toMatch(/Pays the Oct 6(, 2026)? bill/);
     expect(text()).not.toContain("Paid late");
+  });
+
+  it("says a payment made before its bill email is waiting for it, until which day", () => {
+    render(<PaymentSummary payment={{ ...NEEDS_BILL, needsBill: false, waitingUntil: "2026-11-17" }} />);
+    expect(text()).toContain("Waiting for its bill email");
+    // The day as written, not the day before in a time zone behind UTC.
+    expect(text()).toMatch(/up to Nov 17(, 2026)?,/);
+    expect(text()).not.toContain("Needs a bill");
   });
 
   it("says it needs a bill, or is paid on its own", () => {
@@ -197,6 +218,38 @@ describe("the picker", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(sent.find(([m]) => m === "PUT")?.[2]).toEqual({ choice: "bill", billId: "proton-bills/1700000000/2" });
     expect(await screen.findByText(/Saved: this payment pays the Nov 6(, 2026)? bill\./)).toBeTruthy();
+  });
+
+  it("picks several bills for one payment, adding them up against it, and turns a row off again", async () => {
+    const two: BillChoicesResponse = {
+      ...CHOICES,
+      paymentAmount: 113.46,
+      bills: [choice(2, "2026-11-06", { amount: 56.94 }), choice(8, "2026-10-20", { amount: 56.52 }), choice(9, "2026-09-20", { amount: 10 })],
+    };
+    const sent = stub({
+      [`GET ${API}/bill-choices`]: () => reply(200, two),
+      [`PUT ${API}/pairing`]: () => reply(200, { payment: { ...NEEDS_BILL, needsBill: false, how: "person" } }),
+    });
+    show(<PaymentEditor detail={detail(NEEDS_BILL)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose a bill" }));
+    const dialog = await screen.findByRole("dialog", { name: "Choose its bill" });
+    const nov = await within(dialog).findByRole("button", { name: /^Nov 6(, 2026)? bill/ });
+    const oct = within(dialog).getByRole("button", { name: /^Oct 20(, 2026)? bill/ });
+    const sep = within(dialog).getByRole("button", { name: /^Sep 20(, 2026)? bill/ });
+    fireEvent.click(nov);
+    expect(within(dialog).getByRole("status").textContent).toBe("1 bill selected: $56.94, $56.52 less than the $113.46 payment.");
+    fireEvent.click(sep);
+    fireEvent.click(sep);
+    expect(sep.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(oct);
+    expect(within(dialog).getByRole("status").textContent).toBe("2 bills selected: $113.46, exactly the payment.");
+    // The last one selected is the one shown.
+    expect(within(dialog).getByRole("region", { name: "The selected bill" }).textContent).toContain("Your bill 8 is ready");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Pick these 2 bills" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent.find(([m]) => m === "PUT")?.[2]).toEqual({ choice: "bills", billIds: ["proton-bills/1700000000/2", "proton-bills/1700000000/8"] });
+    expect(await screen.findByText(/Saved: this payment pays the Oct 20(, 2026)? and Nov 6(, 2026)? bills\./)).toBeTruthy();
   });
 
   it("shows a bill that cannot be picked as disabled, naming the payment that pays it, with a reason only when it adds something", async () => {

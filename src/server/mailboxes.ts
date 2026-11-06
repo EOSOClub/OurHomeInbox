@@ -16,6 +16,17 @@
 // changing the server, port, security or username needs it typed again. Each mailbox's captured mail sits under data/mail/<slug>: the slug is
 // unique across the install and kept when the mailbox is renamed.
 //
+// A mailbox reads one or more folders over one sign-in (owner, 2026-11-04).
+// Each folder keeps its mail under its own slug (mailbox_folders), so two
+// folders' message numbers never meet; the first folder a mailbox gets uses
+// the mailbox's own slug. A folder taken off the list is kept, marked
+// removed: its emails stay shown with the mailbox, and listing it again
+// picks up where it left off.
+//
+// A mailbox can also list folders or labels to leave out (owner, 2026-11-05,
+// mailbox_skip_folders): an email also in one of them is not captured (see
+// mailbox.ts). A folder cannot be both read and left out.
+//
 // A removed mailbox is kept, marked removed and without its password, so it
 // can be restored with its mail; until then it is not read and its mail is
 // not shown. Its name stays taken, so adding it again by hand (which would
@@ -31,10 +42,12 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import { mailboxSlug } from "../config.js";
 import { log } from "../log.js";
-import { captureMailbox, MailboxError, testMailbox, type MailboxToRead } from "../mailbox.js";
+import { captureMailbox, MailboxError, testMailbox, type CaptureSummary, type FolderRead, type MailboxToRead } from "../mailbox.js";
 import type { CheckingState, MailboxInfo, MailboxListResponse, MailboxTestResponse, RemovedMailbox } from "../shared/api.js";
+import { folderPath } from "../shared/folders.js";
 import {
   MAX_MAILBOX_FOLDER,
+  MAX_MAILBOX_FOLDERS,
   MAX_MAILBOX_HOST,
   MAX_MAILBOX_NAME,
   MAX_MAILBOX_PASSWORD,
@@ -115,7 +128,6 @@ interface MailboxRow {
   security: Security;
   username: string;
   password_secret: string;
-  folder: string;
   enabled: number;
   last_checked_at: string | null;
   last_outcome: string | null;
@@ -127,6 +139,37 @@ interface MailboxRow {
   created_at: string;
   updated_at: string;
 }
+
+interface FolderRow {
+  id: number;
+  mailbox_id: number;
+  folder: string;
+  slug: string;
+  position: number;
+  removed_at: string | null;
+  created_at: string;
+}
+
+/** Settings to try before saving them. */
+type TestConnection = Pick<MailboxToRead, "provider" | "imap"> & { folders: string[]; skipFolders: string[]; savedPasswordProblem: boolean };
+
+/** One folder's read in words: "2 new, 10 captured before", or why it could not be read. */
+function readLine(read: FolderRead): string {
+  if ("problem" in read) return read.problem;
+  const { summary } = read;
+  return (
+    `${summary.captured} new, ${summary.alreadyCaptured} captured before` +
+    (summary.failed ? `, ${summary.failed} could not be captured (tried again next time)` : "") +
+    (summary.tooLarge ? `, ${summary.tooLarge} too large` : "") +
+    (summary.leftOut ? `, ${summary.leftOut} left out` : "")
+  );
+}
+
+/** Messages a read left behind: failed or too large. */
+const leftBehind = (summary: CaptureSummary) => summary.failed + summary.tooLarge;
+
+/** The folders a mailbox reads, in order. */
+const listedFolders = (folders: FolderRow[]) => folders.filter((f) => f.removed_at === null).map((f) => f.folder);
 
 /** The secret's context: a password sealed for one mailbox cannot be opened as another's. */
 const context = (slug: string) => `mailbox:${slug}`;
@@ -178,28 +221,86 @@ const connectionFields = {
     .max(MAX_MAILBOX_USERNAME, "That username is too long."),
   // Not trimmed: a password is used exactly as typed.
   password: z.string({ error: MESSAGES.badShape }).max(MAX_MAILBOX_PASSWORD, "That password is too long.").optional(),
-  folder: z
-    .string({ error: "Enter the folder to read." })
-    .trim()
-    .min(1, "Enter the folder to read, like INBOX or Folders/Bills.")
-    .max(MAX_MAILBOX_FOLDER, "That folder name is too long."),
+  folders: z
+    .array(
+      z
+        .string({ error: "Enter the folder to read." })
+        .trim()
+        .min(1, "Enter the folder to read, like INBOX or Folders/Bills.")
+        .max(MAX_MAILBOX_FOLDER, "That folder name is too long."),
+      { error: "Add a folder to read, like INBOX or Folders/Bills." },
+    )
+    .min(1, "Add a folder to read, like INBOX or Folders/Bills.")
+    .max(MAX_MAILBOX_FOLDERS, `A mailbox can read up to ${MAX_MAILBOX_FOLDERS} folders.`),
+  skipFolders: z
+    .array(
+      z
+        .string({ error: "Enter the folder to leave out." })
+        .trim()
+        .min(1, "Enter the folder to leave out, like Labels/Skip.")
+        .max(MAX_MAILBOX_FOLDER, "That folder name is too long."),
+      { error: MESSAGES.badShape },
+    )
+    .max(MAX_MAILBOX_FOLDERS, `A mailbox can leave out up to ${MAX_MAILBOX_FOLDERS} folders.`)
+    .optional(),
 };
 
-const mailboxSchema = z.object(
-  {
-    name: z
-      .string({ error: "Enter a name for the mailbox." })
-      .trim()
-      .min(1, "Enter a name for the mailbox.")
-      .max(MAX_MAILBOX_NAME, `Keep the name under ${MAX_MAILBOX_NAME} characters.`)
-      .refine((name) => mailboxSlug(name) !== "", "The name needs at least one letter or number."),
-    ...connectionFields,
-    enabled: z.boolean({ error: MESSAGES.badShape }).optional(),
-  },
-  { error: MESSAGES.badShape },
-);
+/**
+ * Each folder as it is read (see shared/folders.ts: for Proton Mail Bridge,
+ * "Finance/Bills" is "Folders/Finance/Bills"), checked again after that, and
+ * each listed once.
+ */
+function withFolderPaths<T extends { provider: Provider; folders: string[]; skipFolders?: string[] | undefined }>(
+  fields: T,
+  ctx: { addIssue: (issue: { code: "custom"; message: string; path: string[] }) => void },
+): T {
+  const folders = fields.folders.map((folder) => folderPath(fields.provider, folder));
+  const skipFolders = fields.skipFolders?.map((folder) => folderPath(fields.provider, folder));
+  const listProblem = (list: string[], empty: string) =>
+    list.includes("")
+      ? empty
+      : list.some((folder) => folder.length > MAX_MAILBOX_FOLDER)
+        ? "That folder name is too long."
+        : new Set(list).size !== list.length
+          ? "Each folder can only be listed once."
+          : null;
+  const problem = listProblem(folders, "Enter the folder to read, like INBOX or Folders/Bills.");
+  if (problem) {
+    ctx.addIssue({ code: "custom", message: problem, path: ["folders"] });
+    return z.NEVER;
+  }
+  if (skipFolders) {
+    const both = skipFolders.find((folder) => folders.includes(folder));
+    const skipProblem =
+      listProblem(skipFolders, "Enter the folder to leave out, like Labels/Skip.") ??
+      (both === undefined ? null : `"${both}" is read by this mailbox, so it cannot also be left out.`);
+    if (skipProblem) {
+      ctx.addIssue({ code: "custom", message: skipProblem, path: ["skipFolders"] });
+      return z.NEVER;
+    }
+  }
+  return { ...fields, folders, ...(skipFolders ? { skipFolders } : {}) };
+}
 
-const testSchema = z.object({ id: z.number().int().positive().optional(), ...connectionFields }, { error: MESSAGES.badShape });
+const mailboxSchema = z
+  .object(
+    {
+      name: z
+        .string({ error: "Enter a name for the mailbox." })
+        .trim()
+        .min(1, "Enter a name for the mailbox.")
+        .max(MAX_MAILBOX_NAME, `Keep the name under ${MAX_MAILBOX_NAME} characters.`)
+        .refine((name) => mailboxSlug(name) !== "", "The name needs at least one letter or number."),
+      ...connectionFields,
+      enabled: z.boolean({ error: MESSAGES.badShape }).optional(),
+    },
+    { error: MESSAGES.badShape },
+  )
+  .transform(withFolderPaths);
+
+const testSchema = z
+  .object({ id: z.number().int().positive().optional(), ...connectionFields }, { error: MESSAGES.badShape })
+  .transform(withFolderPaths);
 
 type MailboxFields = z.output<typeof mailboxSchema>;
 
@@ -225,6 +326,59 @@ export class Mailboxes {
     return this.db.get<MailboxRow>("SELECT * FROM mailboxes WHERE id = ? AND household_id = ? AND removed_at IS NOT NULL", id, householdId);
   }
 
+  /** A mailbox's folders, the ones it reads first (in order), then the ones taken off its list. */
+  private folderRows(mailboxId: number): FolderRow[] {
+    return this.db.all<FolderRow>("SELECT * FROM mailbox_folders WHERE mailbox_id = ? ORDER BY removed_at IS NOT NULL, position, id", mailboxId);
+  }
+
+  /** Every slug a mailbox's mail is kept under: its own, and each of its folders'. */
+  private slugsOf(row: MailboxRow): string[] {
+    return [...new Set([row.slug, ...this.folderRows(row.id).map((f) => f.slug)])];
+  }
+
+  /**
+   * Makes the mailbox read exactly `folders`, in that order. A folder it had
+   * before keeps its slug, so its mail is not captured again; a new one gets
+   * the mailbox's own slug if no folder has it yet, else one of its own. A
+   * folder left out is marked removed, not deleted, and its mail stays shown.
+   */
+  private setFolders(row: Pick<MailboxRow, "id" | "slug">, folders: string[]): void {
+    const stamp = this.now().toISOString();
+    const existing = this.folderRows(row.id);
+    folders.forEach((folder, position) => {
+      const found = existing.find((f) => f.folder === folder);
+      if (found) {
+        this.db.run("UPDATE mailbox_folders SET position = ?, removed_at = NULL WHERE id = ?", position, found.id);
+        return;
+      }
+      const ownSlugFree = !existing.some((f) => f.slug === row.slug) && !this.db.get("SELECT 1 FROM mailbox_folders WHERE slug = ?", row.slug);
+      const slug = ownSlugFree ? row.slug : this.newSlug(`${row.slug} ${folder}`);
+      const id = this.db.run(
+        "INSERT INTO mailbox_folders (mailbox_id, folder, slug, position, created_at) VALUES (?, ?, ?, ?, ?)",
+        row.id,
+        folder,
+        slug,
+        position,
+        stamp,
+      ).lastInsertRowid;
+      existing.push({ id, mailbox_id: row.id, folder, slug, position, removed_at: null, created_at: stamp });
+    });
+    for (const f of existing) {
+      if (f.removed_at === null && !folders.includes(f.folder)) this.db.run("UPDATE mailbox_folders SET removed_at = ? WHERE id = ?", stamp, f.id);
+    }
+  }
+
+  /** The folders a mailbox leaves out, in the order they were listed. */
+  private skipFolderList(mailboxId: number): string[] {
+    return this.db.all<{ folder: string }>("SELECT folder FROM mailbox_skip_folders WHERE mailbox_id = ? ORDER BY position, folder", mailboxId).map((r) => r.folder);
+  }
+
+  /** Makes the mailbox leave out exactly `folders`. Nothing is captured or removed by it: it only decides what later reads take. */
+  private setSkipFolders(mailboxId: number, folders: readonly string[]): void {
+    this.db.run("DELETE FROM mailbox_skip_folders WHERE mailbox_id = ?", mailboxId);
+    folders.forEach((folder, position) => this.db.run("INSERT INTO mailbox_skip_folders (mailbox_id, folder, position) VALUES (?, ?, ?)", mailboxId, folder, position));
+  }
+
   /** The saved password, "" when none is saved, or null when it cannot be read (the key changed). */
   private password(row: MailboxRow): string | null {
     if (row.password_secret === "") return "";
@@ -238,7 +392,8 @@ export class Mailboxes {
       name: row.name,
       slug: row.slug,
       provider: row.provider,
-      folder: row.folder,
+      folders: listedFolders(this.folderRows(row.id)),
+      skipFolders: this.skipFolderList(row.id),
       imap: {
         host: row.host,
         port: row.port,
@@ -268,9 +423,20 @@ export class Mailboxes {
     return row ? this.info(row) : null;
   }
 
-  /** The household's mailboxes by slug, for finding and listing its captured mail. Paused ones included: their mail stays visible. */
+  /**
+   * Where the household's mail is kept, by slug, for finding and listing it:
+   * each mailbox's own slug and each of its folders', including folders taken
+   * off its list. Paused mailboxes included: their mail stays visible.
+   */
   places(householdId: number): Map<string, MailboxPlace> {
-    return new Map(this.rows(householdId).map((row) => [row.slug, { slug: row.slug, name: row.name, folder: row.folder }]));
+    const places = new Map<string, MailboxPlace>();
+    for (const row of this.rows(householdId)) {
+      const folders = this.folderRows(row.id);
+      const own = folders.find((f) => f.slug === row.slug);
+      places.set(row.slug, { slug: row.slug, name: row.name, folder: own?.folder ?? folders[0]?.folder ?? "" });
+      for (const f of folders) if (!places.has(f.slug)) places.set(f.slug, { slug: f.slug, name: row.name, folder: f.folder });
+    }
+    return places;
   }
 
   households(): number[] {
@@ -288,21 +454,29 @@ export class Mailboxes {
         name: row.name,
         slug: row.slug,
         provider: row.provider,
-        folder: row.folder,
+        folders: listedFolders(this.folderRows(row.id)),
+        skipFolders: this.skipFolderList(row.id),
         // Unknown for a mailbox found on disk (see findLostFolders).
         imap: row.host === "" ? null : { host: row.host, port: row.port, security: row.security, username: row.username },
-        emails: capturedEmails(this.store.root, row.slug),
+        emails: this.slugsOf(row).reduce((sum, slug) => sum + capturedEmails(this.store.root, slug), 0),
         removedAt: row.removed_at!,
       }));
   }
 
-  /** A slug for a new mailbox: its name's, made unique across the install and against folders already on disk. */
-  private newSlug(name: string): string {
-    const base = mailboxSlug(name);
+  /** True when a slug is a mailbox's or a folder's. */
+  private slugInUse(slug: string): boolean {
+    return (
+      this.db.get("SELECT 1 FROM mailboxes WHERE slug = ?", slug) !== undefined ||
+      this.db.get("SELECT 1 FROM mailbox_folders WHERE slug = ?", slug) !== undefined
+    );
+  }
+
+  /** A slug for a new mailbox or folder: from `text`, made unique across the install and against folders already on disk. */
+  private newSlug(text: string): string {
+    const base = mailboxSlug(text);
     for (let n = 1; ; n++) {
       const slug = n === 1 ? base : `${base.slice(0, 55)}-${n}`;
-      const taken = this.db.get("SELECT 1 FROM mailboxes WHERE slug = ?", slug) || existsSync(join(this.store.root, slug));
-      if (!taken) return slug;
+      if (!this.slugInUse(slug) && !existsSync(join(this.store.root, slug))) return slug;
     }
   }
 
@@ -327,8 +501,8 @@ export class Mailboxes {
       const slug = this.newSlug(fields.name);
       const stamp = this.now().toISOString();
       const id = this.db.run(
-        `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, password_secret, folder, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, password_secret, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         householdId,
         fields.name,
         slug,
@@ -338,11 +512,12 @@ export class Mailboxes {
         fields.security,
         fields.username,
         fields.password ? this.box.seal(fields.password, context(slug)) : "",
-        fields.folder,
         fields.enabled === false ? 0 : 1,
         stamp,
         stamp,
       ).lastInsertRowid;
+      this.setFolders({ id, slug }, fields.folders);
+      this.setSkipFolders(id, fields.skipFolders ?? []);
       return { mailbox: this.info(this.row(householdId, id)!) };
     });
   }
@@ -361,7 +536,7 @@ export class Mailboxes {
       if (!fields.password && row.password_secret !== "" && !sameServer(row, fields)) return { needsPassword: SERVER_CHANGED };
       const secret = fields.password ? this.box.seal(fields.password, context(row.slug)) : row.password_secret;
       this.db.run(
-        `UPDATE mailboxes SET name = ?, provider = ?, host = ?, port = ?, security = ?, username = ?, password_secret = ?, folder = ?, enabled = ?, updated_at = ?
+        `UPDATE mailboxes SET name = ?, provider = ?, host = ?, port = ?, security = ?, username = ?, password_secret = ?, enabled = ?, updated_at = ?
          WHERE id = ?`,
         fields.name,
         fields.provider,
@@ -370,11 +545,14 @@ export class Mailboxes {
         fields.security,
         fields.username,
         secret,
-        fields.folder,
         fields.enabled === undefined ? row.enabled : fields.enabled ? 1 : 0,
         this.now().toISOString(),
         id,
       );
+      this.setFolders(row, fields.folders);
+      // Left out of the request: the saved ones stay. A saved one now read is no longer left out.
+      const skip = fields.skipFolders ?? this.skipFolderList(id).filter((folder) => !fields.folders.includes(folder));
+      this.setSkipFolders(id, skip);
       return { mailbox: this.info(this.row(householdId, id)!) };
     });
   }
@@ -407,7 +585,7 @@ export class Mailboxes {
       const problem = this.nameTaken(householdId, fields.name, id);
       if (problem) return { problem };
       this.db.run(
-        `UPDATE mailboxes SET name = ?, provider = ?, host = ?, port = ?, security = ?, username = ?, password_secret = ?, folder = ?, enabled = ?,
+        `UPDATE mailboxes SET name = ?, provider = ?, host = ?, port = ?, security = ?, username = ?, password_secret = ?, enabled = ?,
            removed_at = NULL, failing_since = NULL, updated_at = ?
          WHERE id = ?`,
         fields.name,
@@ -417,11 +595,12 @@ export class Mailboxes {
         fields.security,
         fields.username,
         fields.password ? this.box.seal(fields.password, context(row.slug)) : "",
-        fields.folder,
         fields.enabled === false ? 0 : 1,
         this.now().toISOString(),
         id,
       );
+      this.setFolders(row, fields.folders);
+      this.setSkipFolders(id, fields.skipFolders ?? []);
       return { mailbox: this.info(this.row(householdId, id)!) };
     });
   }
@@ -431,10 +610,7 @@ export class Mailboxes {
    * saved one, which is only ever sent to the server it was saved for. Null
    * when `id` names no mailbox of the household.
    */
-  connectionFor(
-    householdId: number,
-    fields: z.output<typeof testSchema>,
-  ): (MailboxToRead & { savedPasswordProblem: boolean }) | { needsPassword: string } | null {
+  connectionFor(householdId: number, fields: z.output<typeof testSchema>): TestConnection | { needsPassword: string } | null {
     let password = fields.password ?? "";
     let savedPasswordProblem = false;
     if (password === "" && fields.id !== undefined) {
@@ -446,10 +622,9 @@ export class Mailboxes {
       password = saved ?? "";
     }
     return {
-      name: "test",
-      slug: "test",
       provider: fields.provider,
-      folder: fields.folder,
+      folders: fields.folders,
+      skipFolders: fields.skipFolders ?? [],
       imap: { host: fields.host, port: fields.port, security: fields.security, username: fields.username, password },
       savedPasswordProblem,
     };
@@ -490,26 +665,42 @@ export class Mailboxes {
         failed++;
         continue;
       }
+      const folders = this.folderRows(row.id)
+        .filter((f) => f.removed_at === null)
+        .map((f) => ({ folder: f.folder, slug: f.slug }));
+      if (folders.length === 0) {
+        const why = "No folder is set for this mailbox. Add one in Settings.";
+        log.error(`"${row.name}": not read: ${why}`);
+        this.recordCheck(row.id, false, why, 0);
+        failed++;
+        continue;
+      }
+      const skipFolders = this.skipFolderList(row.id);
       const mailbox: MailboxToRead = {
         name: row.name,
-        slug: row.slug,
         provider: row.provider,
-        folder: row.folder,
+        folders,
+        skipFolders,
         imap: { host: row.host, port: row.port, security: row.security, username: row.username, password },
       };
-      log.info(`Reading "${row.name}": IMAP ${row.username} at ${row.host}:${row.port} (security ${row.security}), folder ${row.folder}`);
+      const folderList = folders.map((f) => f.folder).join(", ");
+      log.info(
+        `Reading "${row.name}": IMAP ${row.username} at ${row.host}:${row.port} (security ${row.security}), folder${folders.length === 1 ? "" : "s"} ${folderList}` +
+          (skipFolders.length ? `, leaving out emails also in ${skipFolders.join(", ")}` : ""),
+      );
       try {
-        const summary = await captureMailbox(mailbox, this.store);
-        const notCaptured = summary.failed + summary.tooLarge;
-        const message =
-          `${summary.captured} new, ${summary.alreadyCaptured} captured before` +
-          (summary.failed ? `, ${summary.failed} could not be captured (tried again next time)` : "") +
-          (summary.tooLarge ? `, ${summary.tooLarge} too large` : "");
-        log.info(`"${row.name}": ${message}`);
-        this.recordCheck(row.id, notCaptured === 0, message, summary.captured);
-        read++;
-        captured += summary.captured;
-        if (notCaptured) failed++;
+        const reads = await captureMailbox(mailbox, this.store);
+        // One folder reads as before; with several, each says which it is.
+        const message = reads.length === 1 ? readLine(reads[0]!) : reads.map((r) => `${r.folder}: ${readLine(r)}`).join("; ");
+        const problems = reads.filter((r) => "problem" in r).length;
+        const notCaptured = reads.reduce((sum, r) => sum + ("summary" in r ? leftBehind(r.summary) : 0), 0);
+        const newOnes = reads.reduce((sum, r) => sum + ("summary" in r ? r.summary.captured : 0), 0);
+        if (problems === 0) log.info(`"${row.name}": ${message}`);
+        else log.error(`"${row.name}": ${message}`);
+        this.recordCheck(row.id, problems === 0 && notCaptured === 0, message, newOnes);
+        if (problems === 0) read++;
+        captured += newOnes;
+        if (problems > 0 || notCaptured > 0) failed++;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.error(`"${row.name}": ${message}`);
@@ -542,11 +733,11 @@ export class Mailboxes {
       const stamp = this.now().toISOString();
       for (const mailbox of config.mailboxes) {
         const slug = mailboxSlug(mailbox.name);
-        if (this.db.get("SELECT 1 FROM mailboxes WHERE slug = ?", slug) || this.nameTaken(household.id, mailbox.name, null)) continue;
+        if (this.slugInUse(slug) || this.nameTaken(household.id, mailbox.name, null)) continue;
         const { imap } = mailbox;
-        this.db.run(
-          `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, password_secret, folder, enabled, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        const id = this.db.run(
+          `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, password_secret, enabled, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
           household.id,
           mailbox.name,
           slug,
@@ -556,10 +747,12 @@ export class Mailboxes {
           imap.security,
           imap.username,
           imap.password ? this.box.seal(imap.password, context(slug)) : "",
-          mailbox.folder,
           stamp,
           stamp,
-        );
+        ).lastInsertRowid;
+        // As typed on the web: "Finance/Bills" is read as "Folders/Finance/Bills" on the Bridge.
+        const folder = folderPath(mailbox.provider, mailbox.folder);
+        this.setFolders({ id, slug }, folder ? [folder] : []);
         names.push(`"${mailbox.name}" (password ${imap.password ? `from ${imap.passwordEnv}` : `not set: ${imap.passwordEnv} is empty`})`);
       }
       this.db.run("INSERT INTO app_state (key, value) VALUES (?, ?)", IMPORTED_KEY, JSON.stringify({ at: stamp, count: names.length }));
@@ -586,7 +779,7 @@ export class Mailboxes {
     const found = this.db.transaction(() => {
       if (this.db.get("SELECT 1 FROM app_state WHERE key = ?", LOST_FOLDERS_KEY)) return null;
       const lost = subfolders(this.store.root).filter(
-        (slug) => mailboxSlug(slug) === slug && !this.db.get("SELECT 1 FROM mailboxes WHERE slug = ?", slug) && capturedEmails(this.store.root, slug) > 0,
+        (slug) => mailboxSlug(slug) === slug && !this.slugInUse(slug) && capturedEmails(this.store.root, slug) > 0,
       );
       const names: string[] = [];
       const household = households.length === 1 ? households[0]!.id : null;
@@ -596,18 +789,19 @@ export class Mailboxes {
         const base = recorded && mailboxSlug(recorded.name) !== "" ? recorded.name : slug;
         let name = base;
         for (let n = 1; this.nameTaken(household!, name, null); n++) name = `${base.slice(0, MAX_MAILBOX_NAME - 12)} (found${n === 1 ? "" : ` ${n}`})`;
-        this.db.run(
-          `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, password_secret, folder, enabled, removed_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, '', 0, 'none', '', '', ?, 0, ?, ?, ?)`,
+        const id = this.db.run(
+          `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, password_secret, enabled, removed_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, '', 0, 'none', '', '', 0, ?, ?, ?)`,
           household,
           name,
           slug,
           PROVIDERS[0],
-          recorded?.folder ?? "",
           stamp,
           stamp,
           stamp,
-        );
+        ).lastInsertRowid;
+        // Its emails name the folder they came from, offered when it is restored.
+        if (recorded?.folder) this.setFolders({ id, slug }, [recorded.folder]);
         names.push(`"${name}" (${capturedEmails(this.store.root, slug)} emails in ${slug})`);
       }
       this.db.run("INSERT INTO app_state (key, value) VALUES (?, ?)", LOST_FOLDERS_KEY, JSON.stringify({ at: stamp, found: names.length }));
@@ -635,16 +829,20 @@ function mailboxId(c: Context): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
+const messageCount = (n: number) => (n === 1 ? "1 message" : `${n} messages`);
+
 /** Tries a connection, with an answer in plain words whatever happens. */
-async function runTest(connection: MailboxToRead): Promise<MailboxTestResponse> {
+async function runTest(connection: TestConnection): Promise<MailboxTestResponse> {
   try {
-    const result = await testMailbox(connection);
-    if (result.folderProblem) return { ok: false, message: `Signed in, but: ${result.folderProblem}`, folders: result.folders, messages: null };
-    const count = result.messages === 1 ? "1 message" : `${result.messages} messages`;
-    return { ok: true, message: `Signed in. The folder "${connection.folder}" has ${count}.`, folders: result.folders, messages: result.messages };
+    const { folders, checked } = await testMailbox(connection);
+    const problems = checked.flatMap((c) => ("problem" in c ? [c.problem] : []));
+    if (problems.length > 0) return { ok: false, message: `Signed in, but: ${problems.join(" ")}`, folders };
+    const counts = checked.map((c) => `"${c.folder}"${c.leftOut ? " (left out)" : ""} has ${messageCount("messages" in c ? c.messages : 0)}`);
+    const message = counts.length === 1 ? `Signed in. The folder ${counts[0]}.` : `Signed in. ${counts.join(", ")}.`;
+    return { ok: true, message, folders };
   } catch (err) {
     const message = err instanceof MailboxError ? err.message : `Could not connect: ${err instanceof Error ? err.message : String(err)}`;
-    return { ok: false, message, folders: [], messages: null };
+    return { ok: false, message, folders: [] };
   }
 }
 
@@ -669,7 +867,7 @@ export function mailboxRoutes(deps: MailboxDeps): Hono<AppEnv> {
     if (!connection) return apiError(c, 404, NOT_FOUND);
     if ("needsPassword" in connection) return apiError(c, 400, connection.needsPassword);
     if (connection.savedPasswordProblem) {
-      const body: MailboxTestResponse = { ok: false, message: KEY_CHANGED, folders: [], messages: null };
+      const body: MailboxTestResponse = { ok: false, message: KEY_CHANGED, folders: [] };
       return c.json(body);
     }
     return c.json(await runTest(connection));

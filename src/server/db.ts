@@ -13,8 +13,9 @@ export type SqlValue = SQLInputValue;
 
 // Each entry moves the schema up one version: MIGRATIONS[0] makes version 1.
 // Everything is household-scoped from the start, even though v1 has only the
-// one household made at first-time setup.
-const MIGRATIONS: string[] = [
+// one household made at first-time setup. Exported for testing a migration
+// against a database made by an older version.
+export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE households (
     id integer PRIMARY KEY,
@@ -232,6 +233,44 @@ const MIGRATIONS: string[] = [
     received_at text NOT NULL,
     PRIMARY KEY (household_id, message_id, change)
   );
+  `,
+  // A mailbox reads one or more folders (owner, 2026-11-04). Each folder's
+  // captured mail sits under data/mail/<its slug>, so two folders' message
+  // numbers never meet. A mailbox's first folder uses the mailbox's own slug,
+  // which is where its mail already is. A folder taken off the list is kept,
+  // marked removed: its emails stay shown, and listing it again picks up
+  // where it left off instead of capturing everything a second time.
+  `
+  CREATE TABLE mailbox_folders (
+    id integer PRIMARY KEY,
+    mailbox_id integer NOT NULL REFERENCES mailboxes(id),
+    folder text NOT NULL,
+    slug text NOT NULL UNIQUE,
+    position integer NOT NULL,
+    removed_at text,
+    created_at text NOT NULL,
+    UNIQUE (mailbox_id, folder)
+  );
+  INSERT INTO mailbox_folders (mailbox_id, folder, slug, position, created_at)
+    SELECT id, folder, slug, 0, created_at FROM mailboxes WHERE folder <> '';
+  ALTER TABLE mailboxes DROP COLUMN folder;
+  `,
+  // Folders or labels to leave out (owner, 2026-11-05): an email also in one
+  // of them is not captured, so a mail filter's label keeps unwanted emails
+  // (the city's second email about each bill) out of the inbox.
+  `
+  CREATE TABLE mailbox_skip_folders (
+    mailbox_id integer NOT NULL REFERENCES mailboxes(id),
+    folder text NOT NULL,
+    position integer NOT NULL,
+    PRIMARY KEY (mailbox_id, folder)
+  );
+  `,
+  // One payment for several bills (owner, 2026-11-05; contract v3): a
+  // person's pick or a locked pairing keeps its other bills, oldest first, as
+  // a JSON array of capture ids; bill_id stays the oldest. '[]' for one bill.
+  `
+  ALTER TABLE payment_pairings ADD COLUMN also_bill_ids text NOT NULL DEFAULT '[]';
   `,
 ];
 

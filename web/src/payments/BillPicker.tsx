@@ -2,7 +2,9 @@
 // bills a payment could pay, newest first, its biller's or (with the switch)
 // every biller's. Selecting a bill shows it (sender, subject, dates, amount,
 // invoice number and a link to open the email in a new tab) before Pick this
-// bill. Also Paid on its own (it goes to OurHome with no bill) and Let
+// bill. One payment can pay several bills (owner, 2026-11-05): each row turns
+// on and off, the last one selected is shown, and the selected bills are added
+// up against the payment before Pick these bills. Also Paid on its own (it goes to OurHome with no bill) and Let
 // OurHomeInbox choose (the person's choice goes). Bills another payment pays,
 // or that OurHome reported paid or removed, are shown but cannot be picked.
 // Escape closes it without changing anything.
@@ -61,8 +63,20 @@ function BillRow({ bill, all, selected, onSelect }: { bill: BillChoice; all: boo
   );
 }
 
-/** The selected bill, to look at before picking it. */
-function BillPreview({ bill, busy, onPick }: { bill: BillChoice; busy: boolean; onPick: () => void }) {
+/** What the selected bills come to, against the payment: "2 bills selected: $113.46, the payment is $113.46." */
+function totalLine(bills: readonly BillChoice[], paymentAmount: number | null): string {
+  const cents = bills.reduce((sum, bill) => sum + Math.round((bill.amount ?? 0) * 100), 0);
+  const total = formatMoney((cents / 100).toFixed(2));
+  const count = bills.length === 1 ? "1 bill selected" : `${bills.length} bills selected`;
+  if (paymentAmount === null) return `${count}: ${total}.`;
+  const payment = formatMoney(paymentAmount.toFixed(2));
+  const diff = Math.round(paymentAmount * 100) - cents;
+  const fit = diff === 0 ? "exactly the payment" : diff > 0 ? `${formatMoney((diff / 100).toFixed(2))} less than the ${payment} payment` : `${formatMoney((-diff / 100).toFixed(2))} more than the ${payment} payment`;
+  return `${count}: ${total}, ${fit}.`;
+}
+
+/** The last bill selected, to look at before picking, and what all the selected bills come to. */
+function BillPreview({ bill, picked, paymentAmount, busy, onPick }: { bill: BillChoice; picked: readonly BillChoice[]; paymentAmount: number | null; busy: boolean; onPick: () => void }) {
   return (
     <section aria-label="The selected bill" className="mt-3 rounded-md border border-line bg-surface-muted p-3">
       <dl className="divide-y divide-line">
@@ -73,9 +87,14 @@ function BillPreview({ bill, busy, onPick }: { bill: BillChoice; busy: boolean; 
         <DetailRow label="Due date">{bill.dueDate ? formatDay(bill.dueDate) : <span className="text-muted">Not found</span>}</DetailRow>
         <DetailRow label="Invoice number">{bill.invoiceNo ?? <span className="text-muted">Not found</span>}</DetailRow>
       </dl>
+      {picked.length > 1 || paymentAmount !== null ? (
+        <p role="status" className="mt-3 text-sm font-medium wrap-anywhere">
+          {totalLine(picked, paymentAmount)}
+        </p>
+      ) : null}
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <Button variant="primary" className="px-3 py-1.5" busy={busy} onClick={onPick}>
-          Pick this bill
+          {picked.length === 1 ? "Pick this bill" : `Pick these ${picked.length} bills`}
         </Button>
         <a
           href={capturePagePath(bill.id)}
@@ -101,10 +120,13 @@ export function BillPicker({ paymentId, biller, onClose }: { paymentId: string; 
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const [all, setAll] = useState(biller === null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // In the order they were selected; the last one is shown.
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const choices = useBillChoices(paymentId, all);
   const bills = choices.data?.bills ?? [];
-  const selected = bills.find((bill) => bill.id === selectedId && bill.canPick) ?? null;
+  const picked = selectedIds.flatMap((id) => bills.find((bill) => bill.id === id && bill.canPick) ?? []);
+  const shown = picked[picked.length - 1] ?? null;
+  const toggle = (id: string) => setSelectedIds((ids) => (ids.includes(id) ? ids.filter((other) => other !== id) : [...ids, id]));
 
   const save = useMutation({
     mutationFn: (body: PairingRequest) => api.setPairing(paymentId, body),
@@ -112,9 +134,15 @@ export function BillPicker({ paymentId, biller, onClose }: { paymentId: string; 
       refreshAfterPairing(queryClient);
       if (body.choice === "own") onClose("Saved: this payment goes to OurHome on its own, with no bill.");
       else if (body.choice === "auto") onClose("Saved: OurHomeInbox chooses this payment's bill.");
-      else onClose(selected ? `Saved: this payment pays the ${formatShortDate(selected.date)} bill.` : "Saved: this payment pays the chosen bill.");
+      else if (picked.length === 0) onClose("Saved: this payment pays the chosen bill.");
+      else {
+        // Oldest first, as the payment's page lists them.
+        const days = [...picked].sort((a, b) => a.date.localeCompare(b.date)).map((bill) => formatShortDate(bill.date));
+        onClose(days.length === 1 ? `Saved: this payment pays the ${days[0]} bill.` : `Saved: this payment pays the ${days.slice(0, -1).join(", ")} and ${days[days.length - 1]} bills.`);
+      }
     },
   });
+  const pick = () => save.mutate(picked.length === 1 ? { choice: "bill", billId: picked[0]!.id } : { choice: "bills", billIds: picked.map((bill) => bill.id) });
 
   // Focus starts inside the popup, so a keyboard or screen reader is in it at once.
   useEffect(() => {
@@ -168,7 +196,9 @@ export function BillPicker({ paymentId, biller, onClose }: { paymentId: string; 
               <X aria-hidden className="size-4" />
             </Button>
           </div>
-          <p className="mt-1 text-sm text-muted">{whose}, newest first. Select one to see it before you pick it.</p>
+          <p className="mt-1 text-sm text-muted">
+            {whose}, newest first. Select one to see it before you pick it. One payment for several bills: select each of them.
+          </p>
           {biller !== null ? (
             <label className="mt-2 inline-flex cursor-pointer items-center gap-2 text-sm">
               <input
@@ -177,7 +207,7 @@ export function BillPicker({ paymentId, biller, onClose }: { paymentId: string; 
                 checked={all}
                 onChange={(e) => {
                   setAll(e.target.checked);
-                  setSelectedId(null);
+                  setSelectedIds([]);
                 }}
                 className="size-4 accent-accent"
               />
@@ -195,15 +225,17 @@ export function BillPicker({ paymentId, biller, onClose }: { paymentId: string; 
           {bills.length > 0 ? (
             <ul aria-label="Bills" className="flex flex-col gap-2">
               {bills.map((bill) => (
-                <BillRow key={bill.id} bill={bill} all={all} selected={bill.id === selected?.id} onSelect={() => setSelectedId(bill.id)} />
+                <BillRow key={bill.id} bill={bill} all={all} selected={picked.some((p) => p.id === bill.id)} onSelect={() => toggle(bill.id)} />
               ))}
             </ul>
           ) : null}
-          {selected ? (
+          {shown ? (
             <BillPreview
-              bill={selected}
-              busy={save.isPending && save.variables?.choice === "bill"}
-              onPick={() => save.mutate({ choice: "bill", billId: selected.id })}
+              bill={shown}
+              picked={picked}
+              paymentAmount={choices.data?.paymentAmount ?? null}
+              busy={save.isPending && (save.variables?.choice === "bill" || save.variables?.choice === "bills")}
+              onPick={pick}
             />
           ) : null}
         </div>

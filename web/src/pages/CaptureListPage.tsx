@@ -70,6 +70,7 @@ function PickedLine({ item }: { item: CaptureListItem }) {
       <ReviewBadge review={review} />
       {needsCheckNow(item) ? <span className="font-medium text-warn">Needs a check</span> : null}
       {needsBill(item) ? <span className="font-medium text-warn">Needs a bill</span> : null}
+      {item.payment?.role === "payment" && item.payment.waitingUntil ? <span className="text-muted">Waiting for its bill email</span> : null}
       {senderVerified ? null : <span className="font-medium text-warn">Sender not verified</span>}
     </p>
   );

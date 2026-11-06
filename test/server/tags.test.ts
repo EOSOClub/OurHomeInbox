@@ -63,8 +63,8 @@ async function otherHousehold(): Promise<{ captureId: string; tagId: number }> {
   const stamp = "2026-10-29T00:00:00.000Z";
   const household = server.db.run("INSERT INTO households (name, created_at) VALUES ('The Joneses', ?)", stamp).lastInsertRowid;
   server.db.run(
-    `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, folder, created_at, updated_at)
-     VALUES (?, 'Their bills', 'their-bills', 'gmail', 'imap.gmail.com', 993, 'tls', 'jo@example.com', 'Bills', ?, ?)`,
+    `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, created_at, updated_at)
+     VALUES (?, 'Their bills', 'their-bills', 'gmail', 'imap.gmail.com', 993, 'tls', 'jo@example.com', ?, ?)`,
     household,
     stamp,
     stamp,

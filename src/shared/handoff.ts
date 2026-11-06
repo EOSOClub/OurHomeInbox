@@ -74,6 +74,13 @@ export interface HandoffDocument {
   reference?: string;
   /** Contract v2: on a paired receipt OurHomeInbox judged late; left out otherwise. */
   paidLate?: true;
+  /**
+   * Contract v3: on a paired receipt that pays more than one bill, every bill
+   * but the one in `reference` (the oldest), oldest first: its reference, the
+   * part of the payment that pays it (no fee), and paidLate when late. Left
+   * out when it pays one bill. At most 5.
+   */
+  alsoPays?: Array<{ reference: string; amount: number; paidLate?: true }>;
 }
 
 /** Contract v2: what a person did to an email bill in OurHome. */

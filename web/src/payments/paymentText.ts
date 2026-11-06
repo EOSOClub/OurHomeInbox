@@ -34,6 +34,7 @@ export const BILL_STATE_LABELS: Record<BillChoiceState, string> = {
 /** How a payment's bill was chosen, in a few words. */
 export function howLine(payment: Extract<PaymentInfo, { role: "payment" }>): string | null {
   if (payment.how === "person") return "Chosen by someone in the household.";
+  if (payment.how === "auto" && payment.alsoBills.length > 0) return "Chosen by OurHomeInbox: the oldest unpaid bills of this biller, which together fit the amount.";
   if (payment.how === "auto") return "Chosen by OurHomeInbox: the oldest unpaid bill of this biller that fits the amount.";
   return null;
 }

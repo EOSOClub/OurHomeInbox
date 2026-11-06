@@ -2,18 +2,22 @@
 // (/settings/mailboxes/:id) or restoring a removed one with its mail
 // (/settings/mailboxes/removed/:id), with "Test connection" to try the
 // settings first (it lists the mailbox's folders to choose from) and remove
-// on the change page. A saved password is never shown; leaving the box empty
-// keeps it, but only for the same server and login: a changed one needs it
-// typed again. A removed mailbox's password was not kept.
+// on the change page. A mailbox reads one or more folders: each is typed and
+// added with Enter or by leaving the box, and listed below it. Folders or
+// labels to leave out are listed the same way, below those. A saved
+// password is never shown; leaving the box empty keeps it, but only for the
+// same server and login: a changed one needs it typed again. A removed
+// mailbox's password was not kept.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, PlugZap } from "lucide-react";
+import { ArrowLeft, PlugZap, X } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import type { MailboxInfo, MailboxInput, MailboxTestResponse } from "../../../src/shared/api";
+import type { MailboxInfo, MailboxInput } from "../../../src/shared/api";
 import { api } from "../api";
 import { Button, buttonClasses, Card, ChoiceField, ErrorState, LoadingState, Notice, PageTitle, TextField } from "../components/ui";
 import {
+  addFolder,
   checkConnection,
   checkMailboxForm,
   emailCount,
@@ -23,6 +27,7 @@ import {
   PROVIDER_LABELS,
   sameServer,
   SECURITY_CHOICES,
+  type FolderList,
   type MailboxForm,
   type MailboxFormErrors,
 } from "../mailboxes";
@@ -38,33 +43,136 @@ function BackLink() {
   );
 }
 
-/** The result of "Test connection", with the mailbox's folders to choose from. */
-function TestResult({ result, folder, onFolder }: { result: MailboxTestResponse; folder: string; onFolder: (folder: string) => void }) {
-  const selectId = useId();
+/** The words of each folder list: the folders read, and the ones left out. */
+const FOLDER_FIELDS = {
+  folders: {
+    label: "Folders",
+    hint: "Type one, like Finance/Bills, and press Enter. Labels start with Labels/.",
+    picker: "Folders in this mailbox",
+    pick: "Add a folder...",
+    listed: "Folders to read",
+  },
+  skipFolders: {
+    label: "Leave out emails also in",
+    hint: "Optional. A label your mail filter adds to emails you don't want, like Labels/Skip. Emails in it are not brought in.",
+    picker: "Pick one to leave out",
+    pick: "Leave out a folder...",
+    listed: "Folders to leave out",
+  },
+} as const satisfies Record<FolderList, { label: string; hint: string; picker: string; pick: string; listed: string }>;
+
+/**
+ * A list of folders (the ones read, or the ones left out): one is typed, then
+ * added with Enter or by leaving the box, and listed below it. Beside the
+ * box, the mailbox's own folders to pick from, which "Test connection" loads
+ * (null until it has run); ones already in either list cannot be picked.
+ */
+function FoldersField({
+  list,
+  folders,
+  taken,
+  draft,
+  error,
+  available,
+  onDraft,
+  onAdd,
+  onPick,
+  onRemove,
+}: {
+  list: FolderList;
+  folders: string[];
+  /** The folders in the other list. */
+  taken: string[];
+  draft: string;
+  error: string | undefined;
+  available: string[] | null;
+  onDraft: (draft: string) => void;
+  onAdd: () => void;
+  onPick: (folder: string) => void;
+  onRemove: (folder: string) => void;
+}) {
+  const id = useId();
+  const pickerId = useId();
+  const words = FOLDER_FIELDS[list];
+  const hint = error ? undefined : words.hint;
+  const hintId = hint ? `${id}-hint` : undefined;
+  const errorId = error ? `${id}-error` : undefined;
+  const loaded = available !== null && available.length > 0;
+  const pickerPrompt = available === null ? "Test connection to load folders" : loaded ? words.pick : "No folders found";
   return (
-    <div className="flex flex-col gap-2">
-      <Notice tone={result.ok ? "info" : "warning"} live>
-        {result.message}
-      </Notice>
-      {result.folders.length > 0 ? (
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <label htmlFor={selectId} className="text-sm text-muted">
-            Folders in this mailbox:
+    <div className="flex flex-col gap-1">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="flex min-w-0 flex-col gap-1">
+          <label htmlFor={id} className="text-sm font-medium">
+            {words.label}
+          </label>
+          <input
+            id={id}
+            value={draft}
+            autoComplete="off"
+            spellCheck={false}
+            autoCapitalize="off"
+            enterKeyHint="done"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={[hintId, errorId].filter(Boolean).join(" ") || undefined}
+            onChange={(e) => onDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter adds the folder instead of saving the form; not while an input method is still composing.
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                onAdd();
+              }
+            }}
+            onBlur={onAdd}
+            className={`w-full rounded-md border bg-surface px-3 py-2 text-base text-ink placeholder:text-muted ${error ? "border-danger" : "border-line"}`}
+          />
+        </div>
+        <div className="flex min-w-0 flex-col gap-1">
+          <label htmlFor={pickerId} className="text-sm font-medium">
+            {words.picker}
           </label>
           <select
-            id={selectId}
-            value={result.folders.includes(folder) ? folder : ""}
-            onChange={(e) => e.target.value && onFolder(e.target.value)}
-            className="min-w-0 max-w-full rounded-md border border-line bg-surface px-3 py-1.5 text-sm text-ink"
+            id={pickerId}
+            value=""
+            disabled={!loaded}
+            onChange={(e) => e.target.value && onPick(e.target.value)}
+            className="w-full min-w-0 rounded-md border border-line bg-surface px-3 py-2 text-base text-ink disabled:cursor-not-allowed disabled:text-muted"
           >
-            <option value="">Choose a folder...</option>
-            {result.folders.map((name) => (
-              <option key={name} value={name}>
+            <option value="">{pickerPrompt}</option>
+            {(available ?? []).map((name) => (
+              <option key={name} value={name} disabled={folders.includes(name) || taken.includes(name)}>
                 {name}
               </option>
             ))}
           </select>
         </div>
+      </div>
+      {hint ? (
+        <p id={hintId} className="text-sm text-muted">
+          {hint}
+        </p>
+      ) : null}
+      {error ? (
+        <p id={errorId} className="text-sm text-danger">
+          {error}
+        </p>
+      ) : null}
+      {folders.length > 0 ? (
+        <ul aria-label={words.listed} className="mt-1 flex min-w-0 flex-wrap gap-2">
+          {folders.map((folder) => (
+            <li key={folder} className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-line bg-surface-muted py-0.5 pl-3 pr-0.5 text-sm">
+              <span className="min-w-0 font-mono wrap-anywhere">{folder}</span>
+              <button
+                type="button"
+                onClick={() => onRemove(folder)}
+                aria-label={`Remove ${folder}`}
+                className="shrink-0 rounded p-1.5 text-muted hover:bg-surface hover:text-ink"
+              >
+                <X aria-hidden className="size-4" />
+              </button>
+            </li>
+          ))}
+        </ul>
       ) : null}
     </div>
   );
@@ -94,11 +202,46 @@ function MailboxFormCard({
   const serverChanged = saved !== null && passwordSaved && !sameServer(form, saved);
   const test = useMutation({ mutationFn: api.testMailbox });
 
-  const text = (key: "name" | "host" | "port" | "username" | "password" | "folder") => ({
+  const text = (key: "name" | "host" | "port" | "username" | "password") => ({
     value: form[key],
     onChange: (e: { target: { value: string } }) => setForm((f) => ({ ...f, [key]: e.target.value })),
     error: errors[key],
   });
+
+  const draftOf = (list: FolderList) => (list === "folders" ? "folderDraft" : "skipDraft");
+
+  /** Adds the folder typed in the list's box, or says why it cannot be. */
+  function commitFolder(list: FolderList) {
+    const added = addFolder(form, list);
+    setForm(added.form);
+    setErrors((e) => ({ ...e, [list]: added.error ?? undefined }));
+  }
+
+  /** Adds a folder chosen from the test's list, keeping whatever is typed in the box. */
+  function pickFolder(list: FolderList, folder: string) {
+    const draft = draftOf(list);
+    const added = addFolder({ ...form, [draft]: folder }, list);
+    if (!added.error) setForm({ ...added.form, [draft]: form[draft] });
+    setErrors((e) => ({ ...e, [list]: added.error ?? undefined }));
+  }
+
+  const folderField = (list: FolderList) => {
+    const draft = draftOf(list);
+    return (
+      <FoldersField
+        list={list}
+        folders={form[list]}
+        taken={form[list === "folders" ? "skipFolders" : "folders"]}
+        draft={form[draft]}
+        error={errors[list]}
+        available={test.data?.folders ?? null}
+        onDraft={(text) => setForm((f) => ({ ...f, [draft]: text }))}
+        onAdd={() => commitFolder(list)}
+        onPick={(folder) => pickFolder(list, folder)}
+        onRemove={(folder) => setForm((f) => ({ ...f, [list]: f[list].filter((name) => name !== folder) }))}
+      />
+    );
+  };
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -149,13 +292,8 @@ function MailboxFormCard({
         />
         <TextField label="Username" autoComplete="off" spellCheck={false} autoCapitalize="off" {...text("username")} />
         <TextField label="Password" type="password" autoComplete="new-password" hint={passwordHint} {...text("password")} />
-        <TextField
-          label="Folder"
-          autoComplete="off"
-          spellCheck={false}
-          hint="The folder to read, like Folders/Bills. Test the connection to see every folder."
-          {...text("folder")}
-        />
+        {folderField("folders")}
+        {folderField("skipFolders")}
         {saved ? (
           <label className="flex cursor-pointer items-start gap-3">
             <input
@@ -180,14 +318,18 @@ function MailboxFormCard({
               <PlugZap aria-hidden className="size-4" />
               Test connection
             </Button>
-            <p className="mt-1 text-sm text-muted">Signs in and opens the folder without changing anything. Nothing is saved.</p>
+            <p className="mt-1 text-sm text-muted">Signs in and opens each folder without changing anything. Nothing is saved.</p>
           </div>
           {test.isError ? (
             <Notice tone="error" live>
               {test.error.message}
             </Notice>
           ) : null}
-          {test.data ? <TestResult result={test.data} folder={form.folder} onFolder={(folder) => setForm((f) => ({ ...f, folder }))} /> : null}
+          {test.data ? (
+            <Notice tone={test.data.ok ? "info" : "warning"} live>
+              {test.data.message}
+            </Notice>
+          ) : null}
         </div>
 
         {error ? (

@@ -26,7 +26,8 @@ function bill(uid: number, options: { verified?: boolean; date?: string; html?: 
     `Authentication-Results: mail.protonmail.ch; dmarc=${options.verified === false ? "fail" : "pass"} (p=reject dis=none) header.from=water.example`,
     "Content-Type: text/html",
     "",
-    options.html ?? "<table><tr><td>Amount Due:</td><td>$42.10</td></tr><tr><td>Due Date:</td><td>11/04/2026</td></tr></table>",
+    // Each its own bill: a due date of its own (bill 1 is due 11/04), or same-day bills would be one bill sent twice (copies.ts).
+    options.html ?? `<table><tr><td>Amount Due:</td><td>$42.10</td></tr><tr><td>Due Date:</td><td>11/${String(3 + uid).padStart(2, "0")}/2026</td></tr></table>`,
     "",
   ];
   return Buffer.from(lines.join("\r\n"));

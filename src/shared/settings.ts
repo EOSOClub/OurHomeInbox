@@ -22,6 +22,8 @@ export const MAX_CAPTURE_MINUTES = 1440;
 
 export const MAX_MAILBOX_NAME = 100;
 export const MAX_MAILBOX_FOLDER = 300;
+/** How many folders one mailbox may read. */
+export const MAX_MAILBOX_FOLDERS = 20;
 export const MAX_MAILBOX_HOST = 253;
 export const MAX_MAILBOX_USERNAME = 320;
 export const MAX_MAILBOX_PASSWORD = 1000;

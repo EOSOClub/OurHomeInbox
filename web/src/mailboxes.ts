@@ -3,8 +3,10 @@
 // read and the reading schedule are put in words.
 
 import type { CheckingState, MailboxInfo, MailboxInput, MailboxTestRequest, RemovedMailbox } from "../../src/shared/api";
+import { folderPath } from "../../src/shared/folders";
 import {
   MAX_MAILBOX_FOLDER,
+  MAX_MAILBOX_FOLDERS,
   MAX_MAILBOX_HOST,
   MAX_MAILBOX_NAME,
   MAX_MAILBOX_PASSWORD,
@@ -41,9 +43,21 @@ export interface MailboxForm {
   username: string;
   /** Empty when changing a mailbox means "keep the saved one". */
   password: string;
-  folder: string;
+  /** The folders to read, as added. */
+  folders: string[];
+  /** A folder being typed, not added yet. It counts as added when the form is checked. */
+  folderDraft: string;
+  /** The folders or labels to leave out, as added: an email also in one of them is not captured. */
+  skipFolders: string[];
+  /** A folder to leave out being typed, not added yet; counts as added when the form is checked. */
+  skipDraft: string;
   enabled: boolean;
 }
+
+/** Which of the form's two folder lists: the folders read, or the ones left out. */
+export type FolderList = "folders" | "skipFolders";
+
+const DRAFT = { folders: "folderDraft", skipFolders: "skipDraft" } as const satisfies Record<FolderList, keyof MailboxForm>;
 
 export type MailboxFormErrors = Partial<Record<keyof MailboxForm, string>>;
 
@@ -55,9 +69,41 @@ export const EMPTY_MAILBOX_FORM: MailboxForm = {
   security: null,
   username: "",
   password: "",
-  folder: "",
+  folders: [],
+  folderDraft: "",
+  skipFolders: [],
+  skipDraft: "",
   enabled: true,
 };
+
+const NO_FOLDER = "Add a folder to read, like INBOX or Folders/Bills.";
+
+/** Why `folder` (as it will be read) cannot be added to the form's `list`, or null when it can. A folder is never in both lists. */
+function folderProblem(folder: string, form: MailboxForm, list: FolderList): string | null {
+  if (folder.length > MAX_MAILBOX_FOLDER) return "That folder name is too long.";
+  if (form[list].includes(folder)) return `"${folder}" is already in the list.`;
+  if (list === "folders" && form.skipFolders.includes(folder)) return `"${folder}" is left out, so it cannot also be read.`;
+  if (list === "skipFolders" && form.folders.includes(folder)) return `"${folder}" is read by this mailbox, so it cannot also be left out.`;
+  if (form[list].length >= MAX_MAILBOX_FOLDERS)
+    return list === "folders" ? `A mailbox can read up to ${MAX_MAILBOX_FOLDERS} folders.` : `A mailbox can leave out up to ${MAX_MAILBOX_FOLDERS} folders.`;
+  return null;
+}
+
+/**
+ * Adds the folder typed in the `list`'s box to that list (on Enter, or when
+ * the box is left), as it will be read: for Proton Mail Bridge,
+ * "Finance/Bills" is added as "Folders/Finance/Bills", as the server saves
+ * it. Nothing typed changes nothing; a folder that cannot be added stays in
+ * the box with the reason.
+ */
+export function addFolder(form: MailboxForm, list: FolderList = "folders"): { form: MailboxForm; error: string | null } {
+  const draft = DRAFT[list];
+  const folder = folderPath(form.provider, form[draft]);
+  if (!folder) return { form: { ...form, [draft]: "" }, error: null };
+  const error = folderProblem(folder, form, list);
+  if (error) return { form, error };
+  return { form: { ...form, [list]: [...form[list], folder], [draft]: "" }, error: null };
+}
 
 /** The form for changing a saved mailbox: its settings, with the password left empty (kept unless typed). */
 export function formFromMailbox(mailbox: MailboxInfo): MailboxForm {
@@ -69,7 +115,10 @@ export function formFromMailbox(mailbox: MailboxInfo): MailboxForm {
     security: mailbox.imap.security,
     username: mailbox.imap.username,
     password: "",
-    folder: mailbox.folder,
+    folders: mailbox.folders,
+    folderDraft: "",
+    skipFolders: mailbox.skipFolders,
+    skipDraft: "",
     enabled: mailbox.enabled,
   };
 }
@@ -80,7 +129,8 @@ export function formFromRemoved(mailbox: RemovedMailbox): MailboxForm {
     ...EMPTY_MAILBOX_FORM,
     name: mailbox.name,
     provider: mailbox.provider,
-    folder: mailbox.folder,
+    folders: mailbox.folders,
+    skipFolders: mailbox.skipFolders,
     ...(mailbox.imap
       ? { host: mailbox.imap.host, port: String(mailbox.imap.port), security: mailbox.imap.security, username: mailbox.imap.username }
       : {}),
@@ -137,9 +187,14 @@ export function checkConnection(form: MailboxForm, saved: MailboxInfo | null): {
         : "Enter the IMAP password.";
   }
   else if (form.password.length > MAX_MAILBOX_PASSWORD) errors.password = "That password is too long.";
-  const folder = form.folder.trim();
-  if (!folder) errors.folder = "Enter the folder to read, like INBOX or Folders/Bills.";
-  else if (folder.length > MAX_MAILBOX_FOLDER) errors.folder = "That folder name is too long.";
+  // A folder still in a box counts, so it is not lost by saving before Enter.
+  const added = addFolder(form);
+  const folders = added.form.folders;
+  if (added.error) errors.folders = added.error;
+  else if (folders.length === 0) errors.folders = NO_FOLDER;
+  const skipped = addFolder(added.form, "skipFolders");
+  const skipFolders = skipped.form.skipFolders;
+  if (skipped.error) errors.skipFolders = skipped.error;
 
   if (Object.keys(errors).length > 0 || form.security === null) return { errors, connection: null };
   return {
@@ -151,7 +206,8 @@ export function checkConnection(form: MailboxForm, saved: MailboxInfo | null): {
       security: form.security,
       username,
       ...(form.password ? { password: form.password } : {}),
-      folder,
+      folders,
+      skipFolders,
     },
   };
 }

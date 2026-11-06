@@ -35,7 +35,7 @@ const WATER = {
   security: "none",
   username: "water@proton.me",
   password: "water-secret-1",
-  folder: "Folders/Water",
+  folders: ["Folders/Water"],
 };
 
 async function list(as = cookie): Promise<MailboxListResponse> {
@@ -76,7 +76,8 @@ describe("the mailboxes in config.yml", () => {
         name: "Proton bills",
         slug: "proton-bills",
         provider: "proton-bridge",
-        folder: "Folders/Bills",
+        folders: ["Folders/Bills"],
+        skipFolders: [],
         imap: { host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me", passwordSet: true, passwordProblem: null },
         enabled: true,
         lastCheck: null,
@@ -106,6 +107,7 @@ describe("the mailboxes in config.yml", () => {
   });
 
   it("are copied when the household already exists at start (an install from before this version)", async () => {
+    server.db.run("DELETE FROM mailbox_folders");
     server.db.run("DELETE FROM mailboxes");
     server.db.run("DELETE FROM app_state");
     expect(server.service.mailboxes.importFromConfig(server.service.settings.config)).toBe("copied");
@@ -118,13 +120,13 @@ describe("adding and changing a mailbox", () => {
     const created = await send("POST", "/api/mailboxes", WATER);
     expect(created.status).toBe(201);
     const water = await json<MailboxInfo>(created);
-    expect(water).toMatchObject({ name: "Water bills", slug: "water-bills", folder: "Folders/Water", enabled: true, imap: { passwordSet: true } });
+    expect(water).toMatchObject({ name: "Water bills", slug: "water-bills", folders: ["Folders/Water"], enabled: true, imap: { passwordSet: true } });
     expect(JSON.stringify(water)).not.toContain("water-secret-1");
 
     server.clock.now = new Date("2026-10-30T08:00:00Z");
     const { password: _password, ...withoutPassword } = WATER;
-    const changed = await json<MailboxInfo>(await send("PUT", `/api/mailboxes/${water.id}`, { ...withoutPassword, folder: "Bills", enabled: false }));
-    expect(changed).toMatchObject({ folder: "Bills", enabled: false, imap: { passwordSet: true }, updatedAt: "2026-10-30T08:00:00.000Z" });
+    const changed = await json<MailboxInfo>(await send("PUT", `/api/mailboxes/${water.id}`, { ...withoutPassword, folders: ["Labels/Bill"], enabled: false }));
+    expect(changed).toMatchObject({ folders: ["Labels/Bill"], enabled: false, imap: { passwordSet: true }, updatedAt: "2026-10-30T08:00:00.000Z" });
     const sealed = () => server.db.get<{ password_secret: string }>("SELECT password_secret FROM mailboxes WHERE id = ?", water.id)!.password_secret;
     const before = sealed();
     await send("PUT", `/api/mailboxes/${water.id}`, { ...WATER, password: "new-secret-2" });
@@ -134,7 +136,7 @@ describe("adding and changing a mailbox", () => {
   it("keeps a renamed mailbox's mail where it is", async () => {
     await saveEmail(server.store, rawEmail({ subject: "Water bill" }), { uid: 1 });
     const [mailbox] = (await list()).mailboxes;
-    const same = { name: "Sam's Proton", provider: "proton-bridge", host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me", folder: "Folders/Bills" };
+    const same = { name: "Sam's Proton", provider: "proton-bridge", host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me", folders: ["Folders/Bills"] };
     const renamed = await json<MailboxInfo>(await send("PUT", `/api/mailboxes/${mailbox!.id}`, same));
     expect(renamed).toMatchObject({ name: "Sam's Proton", slug: "proton-bills" });
     const { captures } = await json<CaptureListResponse>(await get("/api/captures"));
@@ -163,7 +165,13 @@ describe("adding and changing a mailbox", () => {
     [{ port: "143" }, "as a number"],
     [{ security: "ssl" }, "Choose how the connection is protected."],
     [{ username: " " }, "Enter the IMAP username."],
-    [{ folder: "" }, "Enter the folder to read"],
+    [{ folders: [""] }, "Enter the folder to read"],
+    [{ folders: [] }, "Add a folder to read"],
+    [{ folders: "INBOX" }, "Add a folder to read"],
+    [{ folders: ["INBOX", " INBOX "] }, "Each folder can only be listed once."],
+    [{ folders: ["Finance/Bills", "Folders/Finance/Bills"] }, "Each folder can only be listed once."],
+    [{ folders: [" / "] }, "Enter the folder to read"],
+    [{ folders: Array.from({ length: 21 }, (_, i) => `F${i}`) }, "up to 20 folders"],
     [{ provider: "gmail" }, "Choose the kind of mailbox."],
   ])("refuses %j", async (change, message) => {
     const res = await send("POST", "/api/mailboxes", { ...WATER, ...change });
@@ -195,7 +203,8 @@ describe("adding and changing a mailbox", () => {
         name: "Proton bills",
         slug: "proton-bills",
         provider: "proton-bridge",
-        folder: "Folders/Bills",
+        folders: ["Folders/Bills"],
+        skipFolders: [],
         imap: { host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me" },
         emails: 1,
         removedAt: "2026-10-31T02:33:00.000Z",
@@ -215,7 +224,7 @@ describe("adding and changing a mailbox", () => {
 
     const restored = await send("POST", `/api/mailboxes/${mailbox!.id}/restore`, { ...WATER, name: "Proton bills" });
     expect(restored.status).toBe(200);
-    expect(await json<MailboxInfo>(restored)).toMatchObject({ name: "Proton bills", slug: "proton-bills", folder: "Folders/Water", enabled: true, imap: { passwordSet: true } });
+    expect(await json<MailboxInfo>(restored)).toMatchObject({ name: "Proton bills", slug: "proton-bills", folders: ["Folders/Water"], enabled: true, imap: { passwordSet: true } });
     const now = await list();
     expect(now.removed).toEqual([]);
     expect(now.mailboxes.map((m) => m.slug)).toEqual(["proton-bills"]);
@@ -254,8 +263,8 @@ describe("adding and changing a mailbox", () => {
     const stamp = "2026-10-29T00:00:00.000Z";
     const household = server.db.run("INSERT INTO households (name, created_at) VALUES ('The Joneses', ?)", stamp).lastInsertRowid;
     const theirs = server.db.run(
-      `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, folder, created_at, updated_at)
-       VALUES (?, 'Their bills', 'their-bills', 'proton-bridge', 'h', 1, 'none', 'u', 'INBOX', ?, ?)`,
+      `INSERT INTO mailboxes (household_id, name, slug, provider, host, port, security, username, created_at, updated_at)
+       VALUES (?, 'Their bills', 'their-bills', 'proton-bridge', 'h', 1, 'none', 'u', ?, ?)`,
       household,
       stamp,
       stamp,
@@ -270,6 +279,130 @@ describe("adding and changing a mailbox", () => {
     expect((await send("POST", "/api/mailboxes/test", { ...WATER, id: theirs, password: undefined })).status).toBe(404);
     expect((await json<CaptureListResponse>(await get("/api/captures"))).captures).toEqual([]);
     expect((await get("/api/captures/their-bills/1700000000/1")).status).toBe(404);
+  });
+});
+
+describe("a mailbox with several folders", () => {
+  const SAVED = { name: "Proton bills", provider: "proton-bridge", host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me" };
+  const folderRows = () =>
+    server.db.all<{ folder: string; slug: string; position: number; removed: number }>(
+      "SELECT folder, slug, position, removed_at IS NOT NULL AS removed FROM mailbox_folders ORDER BY id",
+    );
+
+  it("keeps each folder's mail apart: the first in the mailbox's own place, each other in its own", async () => {
+    const [mailbox] = (await list()).mailboxes;
+    const changed = await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, folders: ["Folders/Bills", "Folders/Receipts"] });
+    expect(await json<MailboxInfo>(changed)).toMatchObject({ slug: "proton-bills", folders: ["Folders/Bills", "Folders/Receipts"] });
+    expect(folderRows()).toEqual([
+      { folder: "Folders/Bills", slug: "proton-bills", position: 0, removed: 0 },
+      { folder: "Folders/Receipts", slug: "proton-bills-folders-receipts", position: 1, removed: 0 },
+    ]);
+
+    // The same message number in both folders is two emails, both shown with the mailbox.
+    await saveEmail(server.store, rawEmail({ subject: "Water bill" }), { uid: 1 });
+    await saveEmail(server.store, rawEmail({ subject: "Water receipt" }), { uid: 1, mailbox: "proton-bills-folders-receipts" });
+    const { captures } = await json<CaptureListResponse>(await get("/api/captures"));
+    expect(captures.map((c) => [c.mailbox, c.mailboxSlug, c.subject]).sort()).toEqual([
+      ["Proton bills", "proton-bills", "Water bill"],
+      ["Proton bills", "proton-bills-folders-receipts", "Water receipt"],
+    ]);
+    expect((await get("/api/captures/proton-bills-folders-receipts/1700000000/1")).status).toBe(200);
+  });
+
+  it("reads a Proton folder typed as Proton shows it under Folders/, and keeps labels and Proton's own folders as typed", async () => {
+    const [mailbox] = (await list()).mailboxes;
+    const changed = await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, folders: ["Personal/Finance/Bills", "Labels/Bill", "inbox", "/Archive/Old/"] });
+    expect((await json<MailboxInfo>(changed)).folders).toEqual(["Folders/Personal/Finance/Bills", "Labels/Bill", "INBOX", "Folders/Archive/Old"]);
+
+    // Typed the short way, the folder already read is the same folder: same place, nothing captured again.
+    const again = await json<MailboxInfo>(await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, folders: ["Bills"] }));
+    expect(again.folders).toEqual(["Folders/Bills"]);
+    expect(folderRows().find((f) => f.folder === "Folders/Bills")).toMatchObject({ slug: "proton-bills", removed: 0 });
+  });
+
+  it("keeps a folder taken off the list, with its mail shown, and picks it up again when it is listed again", async () => {
+    const [mailbox] = (await list()).mailboxes;
+    await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, folders: ["Folders/Bills", "Folders/Receipts"] });
+    await saveEmail(server.store, rawEmail({ subject: "Water receipt" }), { uid: 1, mailbox: "proton-bills-folders-receipts" });
+
+    const dropped = await json<MailboxInfo>(await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, folders: ["Folders/Bills"] }));
+    expect(dropped.folders).toEqual(["Folders/Bills"]);
+    expect(folderRows().map((f) => [f.folder, f.removed])).toEqual([["Folders/Bills", 0], ["Folders/Receipts", 1]]);
+    expect((await json<CaptureListResponse>(await get("/api/captures"))).captures.map((c) => c.subject)).toEqual(["Water receipt"]);
+
+    // Listed again, first this time: the same place, so nothing is captured twice.
+    const again = await json<MailboxInfo>(await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, folders: ["Folders/Receipts", "Folders/Bills"] }));
+    expect(again.folders).toEqual(["Folders/Receipts", "Folders/Bills"]);
+    expect(folderRows()).toEqual([
+      { folder: "Folders/Bills", slug: "proton-bills", position: 1, removed: 0 },
+      { folder: "Folders/Receipts", slug: "proton-bills-folders-receipts", position: 0, removed: 0 },
+    ]);
+  });
+
+  it("gives a renamed folder a place of its own, and keeps the old one's mail shown", async () => {
+    await saveEmail(server.store, rawEmail({ subject: "Water bill" }), { uid: 1 });
+    const [mailbox] = (await list()).mailboxes;
+    await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, folders: ["Labels/Bill"] });
+    expect(folderRows().map((f) => [f.folder, f.slug, f.removed])).toEqual([
+      ["Folders/Bills", "proton-bills", 1],
+      ["Labels/Bill", "proton-bills-labels-bill", 0],
+    ]);
+    expect((await json<CaptureListResponse>(await get("/api/captures"))).captures.map((c) => c.subject)).toEqual(["Water bill"]);
+  });
+
+  it("never gives a folder a place already used on disk or by another mailbox", async () => {
+    mkdirSync(join(server.store.root, "proton-bills-inbox"), { recursive: true });
+    const [mailbox] = (await list()).mailboxes;
+    await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, folders: ["Folders/Bills", "INBOX"] });
+    expect(folderRows().map((f) => f.slug)).toEqual(["proton-bills", "proton-bills-inbox-2"]);
+    // A new mailbox named like that folder's place gets one of its own too.
+    expect((await json<MailboxInfo>(await send("POST", "/api/mailboxes", { ...WATER, name: "Proton bills inbox 2" }))).slug).toBe("proton-bills-inbox-2-2");
+  });
+
+  it("counts a removed mailbox's emails from every folder", async () => {
+    const [mailbox] = (await list()).mailboxes;
+    await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, folders: ["Folders/Bills", "Folders/Receipts"] });
+    await saveEmail(server.store, rawEmail({ subject: "Water bill" }), { uid: 1 });
+    await saveEmail(server.store, rawEmail({ subject: "Water receipt" }), { uid: 1, mailbox: "proton-bills-folders-receipts" });
+    await send("DELETE", `/api/mailboxes/${mailbox!.id}`);
+    expect((await list()).removed).toMatchObject([{ folders: ["Folders/Bills", "Folders/Receipts"], emails: 2 }]);
+    expect((await json<CaptureListResponse>(await get("/api/captures"))).captures).toEqual([]);
+  });
+});
+
+describe("folders to leave out", () => {
+  const SAVED = { name: "Proton bills", provider: "proton-bridge", host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me", folders: ["Folders/Bills"] };
+
+  it("saves them, keeps them when a change leaves them out, and clears them when sent empty", async () => {
+    const [mailbox] = (await list()).mailboxes;
+    expect(mailbox!.skipFolders).toEqual([]);
+    const put = async (body: object) => json<MailboxInfo>(await send("PUT", `/api/mailboxes/${mailbox!.id}`, body));
+    expect((await put({ ...SAVED, skipFolders: ["Labels/Skip", "Promos"] })).skipFolders).toEqual(["Labels/Skip", "Folders/Promos"]);
+    expect((await put(SAVED)).skipFolders).toEqual(["Labels/Skip", "Folders/Promos"]);
+    expect((await list()).mailboxes[0]!.skipFolders).toEqual(["Labels/Skip", "Folders/Promos"]);
+    // A saved one that is now read is no longer left out.
+    expect((await put({ ...SAVED, folders: ["Folders/Bills", "Promos"] })).skipFolders).toEqual(["Labels/Skip"]);
+    expect((await put({ ...SAVED, skipFolders: [] })).skipFolders).toEqual([]);
+  });
+
+  it.each([
+    [["Bills"], '"Folders/Bills" is read by this mailbox, so it cannot also be left out.'],
+    [["Labels/Skip", "labels/Skip"], "Each folder can only be listed once."],
+    [[" "], "Enter the folder to leave out, like Labels/Skip."],
+  ])("refuses %j", async (skipFolders, message) => {
+    const [mailbox] = (await list()).mailboxes;
+    const res = await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, skipFolders });
+    expect(res.status).toBe(400);
+    expect((await json<ApiError>(res)).error).toBe(message);
+  });
+
+  it("are kept with a removed mailbox and restored with it", async () => {
+    const [mailbox] = (await list()).mailboxes;
+    await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, skipFolders: ["Labels/Skip"] });
+    expect((await send("DELETE", `/api/mailboxes/${mailbox!.id}`)).status).toBe(204);
+    expect((await list()).removed[0]!.skipFolders).toEqual(["Labels/Skip"]);
+    const restored = await send("POST", `/api/mailboxes/${mailbox!.id}/restore`, { ...SAVED, password: "bridge", skipFolders: ["Labels/Skip"] });
+    expect((await json<MailboxInfo>(restored)).skipFolders).toEqual(["Labels/Skip"]);
   });
 });
 
@@ -292,7 +425,8 @@ describe("mail on disk that no mailbox owns (a mailbox deleted before removed on
         name: "Proton bill label",
         slug: "proton-bill-label",
         provider: "proton-bridge",
-        folder: "Folders/Bills",
+        folders: ["Folders/Bills"],
+        skipFolders: [],
         imap: null,
         emails: 2,
         removedAt: "2026-10-29T12:00:00.000Z",
@@ -301,8 +435,8 @@ describe("mail on disk that no mailbox owns (a mailbox deleted before removed on
     expect(server.service.mailboxes.findLostFolders()).toBe("done before");
     expect((await list()).removed).toHaveLength(1);
 
-    const restored = await send("POST", `/api/mailboxes/${removed[0]!.id}/restore`, { ...WATER, name: "Proton bill label", folder: "Labels/Bill" });
-    expect(await json<MailboxInfo>(restored)).toMatchObject({ slug: "proton-bill-label", folder: "Labels/Bill", enabled: true });
+    const restored = await send("POST", `/api/mailboxes/${removed[0]!.id}/restore`, { ...WATER, name: "Proton bill label", folders: ["Labels/Bill"] });
+    expect(await json<MailboxInfo>(restored)).toMatchObject({ slug: "proton-bill-label", folders: ["Labels/Bill"], enabled: true });
     const { captures } = await json<CaptureListResponse>(await get("/api/captures"));
     expect(captures.map((c) => c.subject).sort()).toEqual(["Water bill", "Water bill 2"]);
   });
@@ -322,6 +456,23 @@ describe("mail on disk that no mailbox owns (a mailbox deleted before removed on
     expect(server.db.get("SELECT 1 FROM mailboxes WHERE slug = 'proton-bill-label'")).toBeUndefined();
   });
 
+  it("never takes a folder's mail for a lost mailbox", async () => {
+    const [mailbox] = (await list()).mailboxes;
+    await send("PUT", `/api/mailboxes/${mailbox!.id}`, {
+      name: "Proton bills",
+      provider: "proton-bridge",
+      host: "127.0.0.1",
+      port: 1143,
+      security: "starttls",
+      username: "sam@proton.me",
+      folders: ["Folders/Bills", "Folders/Receipts"],
+    });
+    await saveEmail(server.store, rawEmail({ subject: "Water receipt" }), { uid: 1, mailbox: "proton-bills-folders-receipts" });
+    server.db.run("DELETE FROM app_state WHERE key = 'lost_mail_folders_checked'");
+    expect(server.service.mailboxes.findLostFolders()).toBe("found");
+    expect((await list()).removed).toEqual([]);
+  });
+
   it("waits for first-time setup on a new install", () => {
     server.close();
     server = makeServer();
@@ -330,7 +481,7 @@ describe("mail on disk that no mailbox owns (a mailbox deleted before removed on
 });
 
 describe("a saved password", () => {
-  const SAVED = { name: "Proton bills", provider: "proton-bridge", host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me", folder: "Folders/Bills" };
+  const SAVED = { name: "Proton bills", provider: "proton-bridge", host: "127.0.0.1", port: 1143, security: "starttls", username: "sam@proton.me", folders: ["Folders/Bills"] };
   const sealed = () => server.db.get<{ password_secret: string }>("SELECT password_secret FROM mailboxes")!.password_secret;
 
   it.each([
@@ -354,7 +505,7 @@ describe("a saved password", () => {
 
   it("is kept for the same server, written in other capitals, and a new server works with the password typed", async () => {
     const [mailbox] = (await list()).mailboxes;
-    expect((await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, host: "127.0.0.1", folder: "Bills" })).status).toBe(200);
+    expect((await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, host: "127.0.0.1", folders: ["Bills"] })).status).toBe(200);
     const moved = await send("PUT", `/api/mailboxes/${mailbox!.id}`, { ...SAVED, host: "protonmail-bridge", password: "typed again" });
     expect(moved.status).toBe(200);
     expect(await json<MailboxInfo>(moved)).toMatchObject({ imap: { host: "protonmail-bridge", passwordSet: true } });
@@ -376,7 +527,7 @@ describe("trying settings, and reading mail", () => {
     const port = await closedPort();
     const res = await send("POST", "/api/mailboxes/test", { ...WATER, host: "127.0.0.1", port });
     expect(res.status).toBe(200);
-    expect(await json<MailboxTestResponse>(res)).toEqual({ ok: false, message: `127.0.0.1:${port} refused the connection. Check the port.`, folders: [], messages: null });
+    expect(await json<MailboxTestResponse>(res)).toEqual({ ok: false, message: `127.0.0.1:${port} refused the connection. Check the port.`, folders: [] });
   });
 
   it("tries a saved mailbox with its saved password when none is typed", async () => {

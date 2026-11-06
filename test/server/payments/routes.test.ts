@@ -3,8 +3,8 @@
 // OurHomeInbox choose (the vault's "Hand-off" note, section 7).
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { copyReason } from "../../../src/server/copies.js";
-import { duplicateReason, maybeDuplicateReason, PAIRING_REASONS } from "../../../src/server/handoff/rules.js";
+import { copyReason, repeatReason } from "../../../src/server/copies.js";
+import { duplicateReason, maybeDuplicateReason, PAIRING_REASONS, waitingReason } from "../../../src/server/handoff/rules.js";
 import { lockPairings, setPick } from "../../../src/server/payments/store.js";
 import type { ApiError, Biller, CaptureDetailResponse, CaptureListResponse } from "../../../src/shared/api.js";
 import type { HandoffDocumentsResponse, OurHomeTokenResponse } from "../../../src/shared/handoff.js";
@@ -20,6 +20,8 @@ beforeEach(async () => {
   cookie = await setUp(server.app);
   const res = await send("POST", "/api/billers", { name: "City Water", kind: "bill", senders: ["water.example"] });
   expect(res.status).toBe(201);
+  // Past the 14 days an October payment waits for its bill email, so one with no bill needs a bill.
+  server.clock.now = new Date("2026-11-20T12:00:00Z");
 });
 
 afterEach(() => {
@@ -42,9 +44,11 @@ describe("what the pages say", () => {
     expect((await detail(2)).payment).toEqual({
       role: "payment",
       bill: { id: id(1), date: "2026-10-06T12:00:00.000Z", amount: 80 },
+      alsoBills: [],
       how: "auto",
       paidLate: false,
       needsBill: false,
+      waitingUntil: null,
       staleChoice: false,
       locked: false,
       duplicateOf: null,
@@ -72,10 +76,88 @@ describe("what the pages say", () => {
     expect(page.handoff).toMatchObject({ state: "waits", reason: PAIRING_REASONS.needsBill });
   });
 
+  it("lets a payment made before its bill email wait for it, then pay it when it comes in", async () => {
+    await saveEmail(server.store, paymentEmail(1, "2026-11-12", "80.00"), { uid: 1 });
+    await mark([1], "checked");
+    const waiting = await detail(1);
+    expect(waiting.payment).toMatchObject({ bill: null, needsBill: false, waitingUntil: "2026-11-26" });
+    expect(waiting.handoff).toMatchObject({ state: "waits", reason: waitingReason("2026-11-26") });
+    // Not a payment that needs a bill: the list's filter and Status leave it out.
+    const { captures } = await json<CaptureListResponse>(await send("GET", "/api/captures"));
+    expect(captures.find((c) => c.id === id(1))!.payment).toMatchObject({ needsBill: false });
+
+    await saveEmail(server.store, billEmail(2, "2026-11-17", "80.00", { due: "2026-12-05" }), { uid: 2 });
+    expect((await detail(1)).payment).toMatchObject({ bill: { id: id(2) }, how: "auto", paidLate: false, waitingUntil: null });
+    expect((await detail(2)).payment).toMatchObject({ role: "bill", paidBy: { id: id(1) } });
+  });
+
   it("gives other emails no pairing", async () => {
     await saveEmail(server.store, billEmail(1, "2026-10-06", "80.00"), { uid: 1 });
     await mark([1], "not-bill");
     expect((await detail(1)).payment).toBeNull();
+  });
+});
+
+describe("one payment for several bills (contract v3)", () => {
+  const feed = async (token: string) =>
+    (await json<HandoffDocumentsResponse>(await call(server.app, "/api/handoff/documents", { headers: { Authorization: `Bearer ${token}` } }))).documents;
+
+  it("pays the two oldest unpaid bills together, sends alsoPays only after both bills, and locks both", async () => {
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "56.52", { invoice: "W-1" }), { uid: 1 });
+    await saveEmail(server.store, billEmail(2, "2026-10-08", "56.94", { invoice: "W-2" }), { uid: 2 });
+    await saveEmail(server.store, paymentEmail(3, "2026-10-10", "113.46"), { uid: 3 });
+    const page = await detail(3);
+    expect(page.payment).toMatchObject({ bill: { id: id(1) }, alsoBills: [{ id: id(2), amount: 56.94 }], how: "auto" });
+    expect((await detail(2)).payment).toMatchObject({ role: "bill", paidBy: { id: id(3) } });
+
+    const token = (await json<OurHomeTokenResponse>(await send("POST", "/api/ourhome/token", { startDate: "2026-09-01" }))).token;
+    // Only the first bill checked: the payment waits for both.
+    await mark([1, 3], "checked");
+    expect((await detail(3)).handoff).toMatchObject({ state: "waits", reason: PAIRING_REASONS.billFirst });
+    await mark([2], "checked");
+    const docs = await feed(token);
+    expect(docs.map((d) => d.captureId)).toEqual([id(1), id(2), id(3)]);
+    // The Oct 8 bill came in before the payment, so the Oct 6 one was paid late (section 7); the Oct 8 one was not.
+    expect(docs[2]).toMatchObject({
+      document: { kind: "receipt", amount: 113.46, reference: "W-1", baseAmount: 56.52, fee: 0, paidLate: true, alsoPays: [{ reference: "W-2", amount: 56.94 }] },
+    });
+    expect((docs[2] as { document: { alsoPays: object[] } }).document.alsoPays[0]).not.toHaveProperty("paidLate");
+    // Locked as sent, with both bills.
+    const row = server.db.get<{ bill_id: string; also_bill_ids: string; how: string }>("SELECT bill_id, also_bill_ids, how FROM payment_pairings");
+    expect(row).toEqual({ bill_id: id(1), also_bill_ids: JSON.stringify([id(2)]), how: "locked" });
+  });
+
+  it("saves a person's pick of several bills, oldest first, and refuses one the payment never reaches", async () => {
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "50.00"), { uid: 1 });
+    await saveEmail(server.store, billEmail(2, "2026-10-08", "60.00"), { uid: 2 });
+    await saveEmail(server.store, billEmail(4, "2026-10-09", "5.00"), { uid: 4 });
+    await saveEmail(server.store, paymentEmail(3, "2026-10-12", "80.00"), { uid: 3 });
+    expect((await choices(3)).paymentAmount).toBe(80);
+    // Sent newest first; kept oldest first.
+    const saved = await choose(3, { choice: "bills", billIds: [id(2), id(1)] });
+    expect(saved.status).toBe(200);
+    expect((await json<PairingResponse>(saved)).payment).toMatchObject({ bill: { id: id(1) }, alsoBills: [{ id: id(2) }], how: "person" });
+    // 50 + 60 uses up the 80 before the third bill.
+    const refused = await choose(3, { choice: "bills", billIds: [id(1), id(2), id(4)] });
+    expect(refused.status).toBe(409);
+    expect((await json<ApiError>(refused)).error).toBe("This payment is used up by the older bills before it reaches the Oct 9 bill. Pick fewer bills.");
+    expect((await choose(3, { choice: "bills", billIds: [id(1), id(1)] })).status).toBe(400);
+  });
+});
+
+describe("one bill sent in two emails", () => {
+  it("uses one, never sends the other, and the payment pays the one used, on time", async () => {
+    await saveEmail(server.store, billEmail(1, "2026-08-13", "121.44", { due: "2026-09-03" }), { uid: 1 });
+    await saveEmail(server.store, billEmail(2, "2026-08-14", "121.44", { due: "2026-09-03", invoice: "14221231" }), { uid: 2 });
+    await saveEmail(server.store, paymentEmail(3, "2026-08-29", "121.44"), { uid: 3 });
+    await mark([2], "checked");
+    // A person checked the second one, so that one is used; the first is the repeat.
+    const repeat = await detail(1);
+    expect(repeat.handoff).toMatchObject({ state: "never", reason: repeatReason("City Water", "2026-08-14") });
+    expect(repeat.payment).toBeNull();
+    // Before, the second email counted as a bill coming between, so the payment looked late.
+    expect((await detail(3)).payment).toMatchObject({ bill: { id: id(2) }, paidLate: false });
+    expect((await detail(2)).payment).toMatchObject({ role: "bill", paidBy: { id: id(3) } });
   });
 });
 
@@ -92,9 +174,11 @@ describe("second emails about one payment, and copies of one email", () => {
     expect(page.payment).toEqual({
       role: "payment",
       bill: null,
+      alsoBills: [],
       how: null,
       paidLate: false,
       needsBill: false,
+      waitingUntil: null,
       staleChoice: false,
       locked: false,
       duplicateOf: { id: id(2), date: "2026-10-15T12:00:00.000Z", biller: "City Water" },
@@ -129,7 +213,7 @@ describe("second emails about one payment, and copies of one email", () => {
       security: "none",
       username: "sam@proton.me",
       password: "test-label-secret",
-      folder: "Labels/Bill",
+      folders: ["Labels/Bill"],
     });
     expect(res.status).toBe(201);
     const copy = "bill-label/1700000000/9";
@@ -160,7 +244,7 @@ describe("second emails about one payment, and copies of one email", () => {
           security: "none",
           username: "sam@proton.me",
           password: "test-label-secret",
-          folder: "Labels/Bill",
+          folders: ["Labels/Bill"],
         })
       ).status,
     ).toBe(201);

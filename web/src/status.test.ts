@@ -10,7 +10,8 @@ const working: MailboxInfo = {
   name: "Bills",
   slug: "bills",
   provider: "proton-bridge",
-  folder: "Labels/Bill",
+  folders: ["Labels/Bill"],
+  skipFolders: [],
   imap: { host: "h", port: 1144, security: "none", username: "u", passwordSet: true, passwordProblem: null },
   enabled: true,
   lastCheck: { at: "2026-10-30T12:00:00Z", ok: true, message: "0 new, 36 captured before", captured: 0 },
@@ -78,7 +79,7 @@ describe("emailCounts", () => {
       {
         ...base,
         picked: { ...base.picked, kind: "receipt", needsCheck: true },
-        payment: { role: "payment", bill: null, how: null, paidLate: false, needsBill: true, staleChoice: false, locked: false, duplicateOf: null, maybeDuplicateOf: null },
+        payment: { role: "payment", bill: null, how: null, paidLate: false, needsBill: true, waitingUntil: null, staleChoice: false, locked: false, duplicateOf: null, maybeDuplicateOf: null },
       },
       { ...base, senderVerified: false, biller: null },
     ] as CaptureListItem[];
