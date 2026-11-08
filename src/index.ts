@@ -108,7 +108,9 @@ async function captureOnce(config: Config, db: Database, store: CaptureStore): P
 function pairingNote(payment: PaymentInfo | null): string {
   if (!payment) return "";
   if (payment.role === "bill") {
-    const paid = payment.paidBy ? `paid by ${payment.paidBy.id}` : "no payment yet";
+    const payers = payment.paidBy ? [payment.paidBy, ...payment.alsoPaidBy].map((p) => p.id).join(" and ") : "";
+    const owed = payment.part ? `, ${payment.part.owed.toFixed(2)} still owed` : "";
+    const paid = payment.paidBy ? `paid ${payment.part ? "in part " : ""}by ${payers}${owed}` : "no payment yet";
     return ` [bill: ${paid}${payment.ourhome ? `; OurHome reported it ${payment.ourhome.change} ${payment.ourhome.at}` : ""}]`;
   }
   if (payment.duplicateOf) return ` [payment: duplicate of ${payment.duplicateOf.id}]`;
@@ -116,7 +118,7 @@ function pairingNote(payment: PaymentInfo | null): string {
   if (payment.needsBill) return ` [payment: needs a bill${payment.maybeDuplicateOf ? `; may repeat ${payment.maybeDuplicateOf.id}` : ""}]`;
   if (payment.how === "own") return ` [payment: paid on its own${payment.locked ? ", locked" : ""}]`;
   const bill = payment.bill ? `pays ${[payment.bill, ...payment.alsoBills].map((b) => b.id).join(" and ")}` : "its bill's email is missing";
-  return ` [payment: ${bill}, chosen ${payment.how === "person" ? "by a person" : "automatically"}${payment.paidLate ? ", paid late" : ""}${payment.locked ? ", locked" : ""}]`;
+  return ` [payment: ${bill}, chosen ${payment.how === "person" ? "by a person" : "automatically"}${payment.part ? `, ${payment.part.billId} paid in part, ${payment.part.owed.toFixed(2)} still owed` : ""}${payment.paidLate ? ", paid late" : ""}${payment.locked ? ", locked" : ""}]`;
 }
 
 /**

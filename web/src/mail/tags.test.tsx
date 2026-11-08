@@ -77,6 +77,8 @@ function stubServer(initial: string[] = [], on: Record<string, number[]> = {}, f
     sender: checkSender(capture),
     invoice: null,
     extraction: extract(capture),
+    asBill: null,
+    asBillByBiller: false,
     tags: refs(idOf(capture)),
     review: null,
     handoff: HANDOFF_WAITS,

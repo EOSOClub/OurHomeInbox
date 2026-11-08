@@ -5,9 +5,10 @@
 // bill. One payment can pay several bills (owner, 2026-11-05): each row turns
 // on and off, the last one selected is shown, and the selected bills are added
 // up against the payment before Pick these bills. Also Paid on its own (it goes to OurHome with no bill) and Let
-// OurHomeInbox choose (the person's choice goes). Bills another payment pays,
-// or that OurHome reported paid or removed, are shown but cannot be picked.
-// Escape closes it without changing anything.
+// OurHomeInbox choose (the person's choice goes). Bills other payments pay in
+// full, or that OurHome reported paid or removed, are shown but cannot be
+// picked. A bill another payment pays only part of can be picked, for what is
+// still owed (owner, 2026-11-07). Escape closes it without changing anything.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, X } from "lucide-react";
@@ -27,11 +28,24 @@ function amountText(bill: BillChoice): string {
   return bill.amount === null ? "No amount" : formatMoney(String(bill.amount));
 }
 
+/** What is left for this payment to pay, when other payments pay part of the bill; null otherwise. */
+function owedText(bill: BillChoice): string | null {
+  return bill.owed !== null && bill.amount !== null && bill.owed < bill.amount ? formatMoney(bill.owed.toFixed(2)) : null;
+}
+
+/** What a bill's state says in the list, naming the other payment when there is one. */
+function stateText(bill: BillChoice): string {
+  const by = bill.paidByDate ? `the ${formatShortDate(bill.paidByDate)} payment` : null;
+  if (bill.state === "paired" && by) return `Paid by ${by}`;
+  if (bill.state === "part") return `${by ? `Partly paid by ${by}` : BILL_STATE_LABELS.part}, ${owedText(bill) ?? amountText(bill)} still owed`;
+  return BILL_STATE_LABELS[bill.state];
+}
+
 /** One bill in the list: a button that selects it, or a disabled one saying why it cannot be picked. */
 function BillRow({ bill, all, selected, onSelect }: { bill: BillChoice; all: boolean; selected: boolean; onSelect: () => void }) {
   const day = formatShortDate(bill.date);
   // Paired with another payment: name that payment, rather than repeat it in a second line.
-  const state = bill.state === "paired" && bill.paidByDate ? `Paid by the ${formatShortDate(bill.paidByDate)} payment` : BILL_STATE_LABELS[bill.state];
+  const state = stateText(bill);
   // The reason line only where it says more than the state (paid or removed in OurHome, or paired, say no more).
   const extra = bill.state === "paired" || bill.state === "paid" || bill.state === "removed" ? null : bill.reason;
   // Named in full: words in separate spans can lose their spaces in the accessible name.
@@ -63,10 +77,13 @@ function BillRow({ bill, all, selected, onSelect }: { bill: BillChoice; all: boo
   );
 }
 
-/** What the selected bills come to, against the payment: "2 bills selected: $113.46, the payment is $113.46." */
+/**
+ * What the selected bills come to, against the payment: "2 bills selected: $113.46, exactly the payment." A bill
+ * other payments pay part of counts for what is still owed: "1 bill selected: $50.00 still owed, ...".
+ */
 function totalLine(bills: readonly BillChoice[], paymentAmount: number | null): string {
-  const cents = bills.reduce((sum, bill) => sum + Math.round((bill.amount ?? 0) * 100), 0);
-  const total = formatMoney((cents / 100).toFixed(2));
+  const cents = bills.reduce((sum, bill) => sum + Math.round((bill.owed ?? bill.amount ?? 0) * 100), 0);
+  const total = formatMoney((cents / 100).toFixed(2)) + (bills.some((bill) => owedText(bill) !== null) ? " still owed" : "");
   const count = bills.length === 1 ? "1 bill selected" : `${bills.length} bills selected`;
   if (paymentAmount === null) return `${count}: ${total}.`;
   const payment = formatMoney(paymentAmount.toFixed(2));
@@ -84,6 +101,7 @@ function BillPreview({ bill, picked, paymentAmount, busy, onPick }: { bill: Bill
         <DetailRow label="Subject">{subjectDisplay(bill.subject)}</DetailRow>
         <DetailRow label="Email date">{formatDateTime(bill.date)}</DetailRow>
         <DetailRow label="Amount">{amountText(bill)}</DetailRow>
+        {owedText(bill) ? <DetailRow label="Still owed">{owedText(bill)}, after the other payments on it</DetailRow> : null}
         <DetailRow label="Due date">{bill.dueDate ? formatDay(bill.dueDate) : <span className="text-muted">Not found</span>}</DetailRow>
         <DetailRow label="Invoice number">{bill.invoiceNo ?? <span className="text-muted">Not found</span>}</DetailRow>
       </dl>

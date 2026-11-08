@@ -93,7 +93,7 @@ export class SummaryCache {
 
   /** The summary of the email with these rules; `load` reads the whole email only when it is not known yet. */
   async get(email: CachedEmail, rules: readonly BillerRule[], load: () => Promise<Capture | null>): Promise<ExtractionSummary> {
-    const ruleKey = rules.map((rule) => `${rule.field}=${rule.label}`).join("\n");
+    const ruleKey = rules.map((rule) => `${rule.field}=${rule.when ?? "always"}:${rule.label}`).join("\n");
     const invoiceKey = email.invoice ? `${email.invoice.outcome}:${email.invoice.sha256 ?? ""}` : "";
     const key = `${email.id}|${email.capturedAt}|${email.rawSha256}|${invoiceKey}|${ruleKey}`;
     let summary = this.entries.get(key);

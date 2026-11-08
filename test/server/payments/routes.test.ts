@@ -8,7 +8,8 @@ import { duplicateReason, maybeDuplicateReason, PAIRING_REASONS, waitingReason }
 import { lockPairings, setPick } from "../../../src/server/payments/store.js";
 import type { ApiError, Biller, CaptureDetailResponse, CaptureListResponse } from "../../../src/shared/api.js";
 import type { HandoffDocumentsResponse, OurHomeTokenResponse } from "../../../src/shared/handoff.js";
-import type { BillChoicesResponse, PairingResponse } from "../../../src/shared/payments.js";
+import { CHOICE_REASONS, PAID_BY_SENT } from "../../../src/server/payments/routes.js";
+import type { BillChoicesResponse, PairingResponse, PayerResponse, PaymentChoicesResponse } from "../../../src/shared/payments.js";
 import { call, json, makeServer, saveEmail, setUp, type TestServer } from "../helpers.js";
 import { billEmail, id, paymentEmail, serviceReceipt } from "./emails.js";
 
@@ -45,6 +46,7 @@ describe("what the pages say", () => {
       role: "payment",
       bill: { id: id(1), date: "2026-10-06T12:00:00.000Z", amount: 80 },
       alsoBills: [],
+      part: null,
       how: "auto",
       paidLate: false,
       needsBill: false,
@@ -54,7 +56,7 @@ describe("what the pages say", () => {
       duplicateOf: null,
       maybeDuplicateOf: null,
     });
-    expect((await detail(1)).payment).toEqual({ role: "bill", paidBy: { id: id(2), date: "2026-10-15T12:00:00.000Z" }, ourhome: null });
+    expect((await detail(1)).payment).toEqual({ role: "bill", paidBy: { id: id(2), date: "2026-10-15T12:00:00.000Z" }, alsoPaidBy: [], part: null, ourhome: null });
     const { captures } = await json<CaptureListResponse>(await send("GET", "/api/captures"));
     expect(captures.find((c) => c.id === id(2))!.payment).toMatchObject({ role: "payment", bill: { id: id(1) } });
   });
@@ -64,7 +66,7 @@ describe("what the pages say", () => {
     await saveEmail(server.store, billEmail(2, "2026-11-06", "80.00"), { uid: 2 });
     await saveEmail(server.store, paymentEmail(3, "2026-11-10", "80.00"), { uid: 3 });
     expect((await detail(3)).payment).toMatchObject({ bill: { id: id(1) }, paidLate: true });
-    expect((await detail(2)).payment).toEqual({ role: "bill", paidBy: null, ourhome: null });
+    expect((await detail(2)).payment).toEqual({ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: null });
   });
 
   it("says a payment with no fitting bill needs a bill, and holds it back even when Checked", async () => {
@@ -145,6 +147,135 @@ describe("one payment for several bills (contract v3)", () => {
   });
 });
 
+describe("one bill paid with two payment emails (Xcel Energy, owner 2026-11-07)", () => {
+  const feed = async (token: string) =>
+    (await json<HandoffDocumentsResponse>(await call(server.app, "/api/handoff/documents", { headers: { Authorization: `Bearer ${token}` } }))).documents;
+
+  it("says partly paid after the first pick, lets the second payment pick the same bill, then paid by both, and sends both", async () => {
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "140.00", { invoice: "X-1" }), { uid: 1 });
+    await saveEmail(server.store, paymentEmail(2, "2026-10-15", "90.00"), { uid: 2 });
+    await saveEmail(server.store, paymentEmail(3, "2026-10-25", "50.00"), { uid: 3 });
+    expect((await choose(2, { choice: "bill", billId: id(1) })).status).toBe(200);
+
+    expect((await detail(2)).payment).toMatchObject({ bill: { id: id(1) }, how: "person", part: { billId: id(1), paid: 90, owed: 50 } });
+    expect((await detail(1)).payment).toEqual({
+      role: "bill",
+      paidBy: { id: id(2), date: "2026-10-15T12:00:00.000Z" },
+      alsoPaidBy: [],
+      part: { billId: id(1), paid: 90, owed: 50 },
+      ourhome: null,
+    });
+    // The other payment can pick it, for what is still owed.
+    const listed = (await choices(3)).bills.find((bill) => bill.id === id(1))!;
+    expect(listed).toMatchObject({ state: "part", canPick: true, reason: null, amount: 140, owed: 50, paidByDate: "2026-10-15T12:00:00.000Z" });
+    // From the first payment's side it is its own, still owing the rest after it.
+    expect((await choices(2)).bills.find((bill) => bill.id === id(1))).toMatchObject({ state: "this", owed: 140 });
+
+    expect((await choose(3, { choice: "bill", billId: id(1) })).status).toBe(200);
+    expect((await detail(3)).payment).toMatchObject({ bill: { id: id(1) }, how: "person", part: null });
+    expect((await detail(2)).payment).toMatchObject({ part: null });
+    expect((await detail(1)).payment).toMatchObject({ paidBy: { id: id(2) }, alsoPaidBy: [{ id: id(3), date: "2026-10-25T12:00:00.000Z" }], part: null });
+    // Paid in full now: a third payment cannot pick it.
+    await saveEmail(server.store, paymentEmail(4, "2026-10-26", "10.00"), { uid: 4 });
+    expect((await choices(4)).bills.find((bill) => bill.id === id(1))).toMatchObject({ state: "paired", canPick: false });
+    expect((await choose(4, { choice: "bill", billId: id(1) })).status).toBe(409);
+
+    // OurHome gets both payments with the bill's reference, each for its own part.
+    const token = (await json<OurHomeTokenResponse>(await send("POST", "/api/ourhome/token", { startDate: "2026-09-01" }))).token;
+    await mark([1, 2, 3], "checked");
+    const docs = await feed(token);
+    expect(docs.map((d) => d.captureId)).toEqual([id(1), id(2), id(3)]);
+    expect(docs[1]).toMatchObject({ document: { kind: "receipt", amount: 90, reference: "X-1", baseAmount: 90, fee: 0 } });
+    expect(docs[2]).toMatchObject({ document: { kind: "receipt", amount: 50, reference: "X-1", baseAmount: 50, fee: 0 } });
+  });
+});
+
+describe("Choose its payment, from a bill (owner, 2026-11-07)", () => {
+  const paymentChoicesOf = async (uid: number, all = false) =>
+    json<PaymentChoicesResponse>(await send("GET", `/api/captures/${id(uid)}/payment-choices${all ? "?all=1" : ""}`));
+  const pickPayer = (uid: number, paymentUid: number) => send("PUT", `/api/captures/${id(uid)}/payer`, { paymentId: id(paymentUid) });
+  const householdId = () => server.db.get<{ id: number }>("SELECT id FROM households")!.id;
+
+  beforeEach(async () => {
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "80.00"), { uid: 1 });
+    await saveEmail(server.store, billEmail(2, "2026-11-06", "80.00"), { uid: 2 });
+    // Pays the Oct 6 bill by itself.
+    await saveEmail(server.store, paymentEmail(3, "2026-10-15", "80.00"), { uid: 3 });
+    // Fits no bill.
+    await saveEmail(server.store, paymentEmail(4, "2026-11-10", "40.00"), { uid: 4 });
+  });
+
+  it("lists the biller's payments, newest first, with what each pays now, and adds one to an unpaid bill", async () => {
+    const list = await paymentChoicesOf(2);
+    expect(list).toMatchObject({ biller: "City Water", all: false, billAmount: 80, mode: "add", blocked: null });
+    expect(list.payments.map((p) => p.id)).toEqual([id(4), id(3)]);
+    expect(list.payments[0]).toMatchObject({ state: "free", canPick: true, amount: 40, pays: [], paidDate: "2026-11-10", sender: "City Water" });
+    expect(list.payments[1]).toMatchObject({ state: "other", canPick: true, pays: [{ id: id(1), date: "2026-10-06T12:00:00.000Z" }] });
+
+    const saved = await pickPayer(2, 4);
+    expect(saved.status).toBe(200);
+    expect((await json<PayerResponse>(saved)).bill).toMatchObject({ role: "bill", paidBy: { id: id(4) }, part: { paid: 40, owed: 40 } });
+    expect((await detail(4)).payment).toMatchObject({ bill: { id: id(2) }, how: "person" });
+    expect((await paymentChoicesOf(2)).payments.find((p) => p.id === id(4))).toMatchObject({ state: "this", canPick: false });
+    // Picking the one that pays it already changes nothing.
+    expect((await pickPayer(2, 4)).status).toBe(200);
+  });
+
+  it("puts the picked payment in place of one that pays the bill in full, and takes that bill off its pick", async () => {
+    expect((await choose(3, { choice: "bill", billId: id(1) })).status).toBe(200);
+    expect((await paymentChoicesOf(1)).mode).toBe("replace");
+    expect((await pickPayer(1, 4)).status).toBe(200);
+    expect((await detail(1)).payment).toMatchObject({ paidBy: { id: id(4) }, alsoPaidBy: [], part: { owed: 40 } });
+    // The person's pick of the Oct 6 bill on the other payment is gone: OurHomeInbox chooses for it again.
+    expect(server.db.get("SELECT 1 FROM payment_pairings WHERE payment_id = ?", id(3))).toBeUndefined();
+    expect((await detail(3)).payment).toMatchObject({ bill: null, needsBill: true });
+  });
+
+  it("keeps a payment's other bills when the bill is taken off its pick", async () => {
+    await saveEmail(server.store, billEmail(6, "2026-12-06", "30.00"), { uid: 6 });
+    await saveEmail(server.store, billEmail(7, "2026-12-08", "30.00"), { uid: 7 });
+    await saveEmail(server.store, paymentEmail(8, "2026-12-10", "60.00"), { uid: 8 });
+    expect((await choose(8, { choice: "bills", billIds: [id(6), id(7)] })).status).toBe(200);
+    expect((await pickPayer(7, 4)).status).toBe(200);
+    expect((await detail(8)).payment).toMatchObject({ bill: { id: id(6) }, alsoBills: [], how: "person" });
+    expect((await detail(7)).payment).toMatchObject({ paidBy: { id: id(4) }, alsoPaidBy: [] });
+  });
+
+  it("refuses a payment sent to OurHome, and any pick while a sent payment pays the bill in full", async () => {
+    lockPairings(server.db, householdId(), [{ paymentId: id(3), billId: id(1) }], new Date("2026-11-20T12:00:00Z"));
+    const fromNov = (await paymentChoicesOf(2)).payments.find((p) => p.id === id(3));
+    expect(fromNov).toMatchObject({ state: "locked", canPick: false, reason: CHOICE_REASONS.locked });
+    expect((await pickPayer(2, 3)).status).toBe(409);
+    const fromOct = await paymentChoicesOf(1);
+    expect(fromOct).toMatchObject({ mode: "replace", blocked: PAID_BY_SENT });
+    expect(fromOct.payments.every((p) => !p.canPick)).toBe(true);
+    const refused = await pickPayer(1, 4);
+    expect(refused.status).toBe(409);
+    expect((await json<ApiError>(refused)).error).toBe(PAID_BY_SENT);
+  });
+
+  it("is only for bills, and only for the household's payments", async () => {
+    const notBill = await send("GET", `/api/captures/${id(3)}/payment-choices`);
+    expect(notBill.status).toBe(409);
+    expect((await send("PUT", `/api/captures/${id(2)}/payer`, { paymentId: id(1) })).status).toBe(404);
+    expect((await send("PUT", `/api/captures/${id(2)}/payer`, { paymentId: "" })).status).toBe(400);
+  });
+});
+
+describe("after a Fix (owner, 2026-11-07)", () => {
+  it("pairs a payment with its bill on the next read once its amount is fixed", async () => {
+    await saveEmail(server.store, billEmail(1, "2026-10-06", "80.00"), { uid: 1 });
+    // The reader trusts "Total" over "Amount Paid", so it picks the wrong amount.
+    const rows = paymentEmail(2, "2026-10-15", "80.00").toString().replace("<table>", "<table><tr><td>Total:</td><td>$5.00</td></tr>");
+    await saveEmail(server.store, Buffer.from(rows), { uid: 2 });
+    expect((await detail(2)).payment).toMatchObject({ bill: null, needsBill: true });
+    const billerId = (await json<{ billers: Biller[] }>(await send("GET", "/api/billers"))).billers[0]!.id;
+    expect((await send("PUT", `/api/billers/${billerId}/rules/amount`, { label: "Amount Paid" })).status).toBe(204);
+    expect((await detail(2)).payment).toMatchObject({ bill: { id: id(1) }, how: "auto", needsBill: false });
+    expect((await detail(1)).payment).toMatchObject({ paidBy: { id: id(2) } });
+  });
+});
+
 describe("one bill sent in two emails", () => {
   it("uses one, never sends the other, and the payment pays the one used, on time", async () => {
     await saveEmail(server.store, billEmail(1, "2026-08-13", "121.44", { due: "2026-09-03" }), { uid: 1 });
@@ -175,6 +306,7 @@ describe("second emails about one payment, and copies of one email", () => {
       role: "payment",
       bill: null,
       alsoBills: [],
+      part: null,
       how: null,
       paidLate: false,
       needsBill: false,

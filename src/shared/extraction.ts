@@ -83,10 +83,21 @@ export interface InvoiceText {
  * value after this label. It is tried before the built-in labels; an email
  * without the label falls back to them.
  */
+/**
+ * When a rule's value is used (owner, 2026-11-08):
+ * - always: wherever its label is found, ahead of the built-in reader. For a value the reader picks wrong.
+ * - missing: only in emails where nothing else gives the field. For a value the reader cannot find, such as
+ *   a reminder's "Past Due Balance", without changing the emails where it already finds one.
+ */
+export const RULE_WHEN = ["always", "missing"] as const;
+export type RuleWhen = (typeof RULE_WHEN)[number];
+
 export interface BillerRule {
   field: FieldName;
   /** As written in the email it was chosen from; matched ignoring case. */
   label: string;
+  /** Left out: always. */
+  when?: RuleWhen;
 }
 
 export const MAX_RULE_LABEL = 60;
@@ -105,6 +116,11 @@ export interface FieldChoice {
   valuesHere: number;
   /** How many of the biller's other emails would get a different value with this rule. */
   changes: number;
+  /**
+   * The same, with the rule used only where nothing else gives the field (RuleWhen "missing").
+   * Null when that would not give this email the value, because something else already gives the field here.
+   */
+  changesWhenMissing: number | null;
 }
 
 export interface Extraction {

@@ -413,6 +413,72 @@ describe("fixed pairings, checked again on every read", () => {
     expect(result.payments.get("a-newer")).toMatchObject({ billId: null, needsBill: true, staleChoice: true });
   });
 
+  describe("part payments: one bill, two payment emails (Xcel Energy, owner 2026-11-07)", () => {
+    const at = (chosenAt: string, locked = false): FixedPairing => ({ billId: "b", alsoBillIds: [], locked, person: !locked, chosenAt });
+    const emails = [bill("b", "2026-10-06", 140), payment("p90", "2026-10-15", 90), payment("p60", "2026-10-25", 60)];
+
+    it("leaves the bill partly paid after the first pick, and the other payment free to pick it", () => {
+      const result = pair(emails, { fixed: new Map([["p90", at("2026-11-07T09:00:00.000Z")]]) });
+      expect(result.payments.get("p90")).toMatchObject({ billId: "b", how: "person", feeCents: 0, baseCents: 9000, needsBill: false });
+      expect(result.leftCents.get("b")).toBe(5000);
+      expect(result.payers.get("b")).toEqual(["p90"]);
+      // The automatic pairing never adds a payment to it.
+      expect(result.payments.get("p60")).toMatchObject({ billId: null, needsBill: true });
+    });
+
+    it("pays it in full with the second pick, the fee being what the second pays over the rest", () => {
+      const fixed = new Map([
+        ["p60", at("2026-11-07T10:00:00.000Z")],
+        ["p90", at("2026-11-07T09:00:00.000Z")],
+      ]);
+      const result = pair(emails, { fixed });
+      expect(result.payments.get("p90")).toMatchObject({ billId: "b", feeCents: 0, baseCents: 9000, staleChoice: false });
+      expect(result.payments.get("p60")).toMatchObject({ billId: "b", feeCents: 1000, baseCents: 5000, staleChoice: false });
+      expect(result.paidBy.get("b")).toBe("p90");
+      expect(result.payers.get("b")).toEqual(["p90", "p60"]);
+      expect(result.leftCents.get("b")).toBe(0);
+      // Exactly what is owed: no fee.
+      const exact = pair([bill("b", "2026-10-06", 150), payment("p90", "2026-10-15", 90), payment("p60", "2026-10-25", 60)], { fixed });
+      expect(exact.payments.get("p60")).toMatchObject({ feeCents: 0, baseCents: 6000 });
+      expect(exact.leftCents.get("b")).toBe(0);
+    });
+
+    it("refuses a third pick once the bill is paid in full", () => {
+      const fixed = new Map([
+        ["p90", at("2026-11-07T09:00:00.000Z")],
+        ["p60", at("2026-11-07T10:00:00.000Z")],
+        ["p20", at("2026-11-07T11:00:00.000Z")],
+      ]);
+      const result = pair([...emails, payment("p20", "2026-10-26", 20)], { fixed });
+      expect(result.payments.get("p20")).toMatchObject({ billId: null, needsBill: true, staleChoice: true });
+      expect(result.payers.get("b")).toEqual(["p90", "p60"]);
+    });
+
+    it("keeps each payment's part as it was when one of them was sent first", () => {
+      const picks = new Map([
+        ["p90", at("2026-11-07T09:00:00.000Z")],
+        ["p60", at("2026-11-07T10:00:00.000Z")],
+      ]);
+      // The later pick sent first (the earlier one still waiting): locked, it keeps its pick time.
+      const sentSecond = new Map([...picks, ["p60", at("2026-11-07T10:00:00.000Z", true)]]);
+      for (const fixed of [picks, sentSecond]) {
+        const result = pair(emails, { fixed });
+        expect(result.payments.get("p90")).toMatchObject({ billId: "b", feeCents: 0, baseCents: 9000, staleChoice: false });
+        expect(result.payments.get("p60")).toMatchObject({ billId: "b", feeCents: 1000, baseCents: 5000 });
+      }
+    });
+
+    it("lets a pick pay the rest of a bill a locked payment paid only part of", () => {
+      const fixed = new Map([
+        ["p90", at("2026-11-07T09:00:00.000Z", true)],
+        ["p60", at("2026-11-07T10:00:00.000Z")],
+      ]);
+      const result = pair(emails, { fixed });
+      expect(result.payments.get("p90")).toMatchObject({ billId: "b", locked: true, baseCents: 9000 });
+      expect(result.payments.get("p60")).toMatchObject({ billId: "b", how: "person", baseCents: 5000, feeCents: 1000 });
+    });
+  });
+
   it("keeps a locked pairing even when its bill could not be picked now", () => {
     const fixed = new Map<string, FixedPairing>([["p", { billId: "b", locked: true, person: false, chosenAt: CHOSEN, alsoBillIds: [] }]]);
     const result = pair([bill("b", "2026-10-06", 80, { notBill: true }), payment("p", "2026-10-10", 80)], { fixed, reported: new Set(["b"]) });

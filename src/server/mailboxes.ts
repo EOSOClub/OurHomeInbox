@@ -42,7 +42,7 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import { mailboxSlug } from "../config.js";
 import { log } from "../log.js";
-import { captureMailbox, MailboxError, testMailbox, type CaptureSummary, type FolderRead, type MailboxToRead } from "../mailbox.js";
+import { captureMailbox, MailboxError, testMailbox, type CaptureSummary, type FolderRead, type MailboxTest, type MailboxToRead } from "../mailbox.js";
 import type { CheckingState, MailboxInfo, MailboxListResponse, MailboxTestResponse, RemovedMailbox } from "../shared/api.js";
 import { folderPath } from "../shared/folders.js";
 import {
@@ -197,6 +197,18 @@ function sameServer(
 
 // ---- Checks on what is sent ---------------------------------------------------
 
+/** The folders to read. A test may have none yet: it lists the mailbox's folders to choose from. */
+const folderList = z
+  .array(
+    z
+      .string({ error: "Enter the folder to read." })
+      .trim()
+      .min(1, "Enter the folder to read, like INBOX or Folders/Bills.")
+      .max(MAX_MAILBOX_FOLDER, "That folder name is too long."),
+    { error: "Add a folder to read, like INBOX or Folders/Bills." },
+  )
+  .max(MAX_MAILBOX_FOLDERS, `A mailbox can read up to ${MAX_MAILBOX_FOLDERS} folders.`);
+
 const connectionFields = {
   provider: z.enum(PROVIDERS, { error: "Choose the kind of mailbox." }),
   host: z
@@ -221,17 +233,7 @@ const connectionFields = {
     .max(MAX_MAILBOX_USERNAME, "That username is too long."),
   // Not trimmed: a password is used exactly as typed.
   password: z.string({ error: MESSAGES.badShape }).max(MAX_MAILBOX_PASSWORD, "That password is too long.").optional(),
-  folders: z
-    .array(
-      z
-        .string({ error: "Enter the folder to read." })
-        .trim()
-        .min(1, "Enter the folder to read, like INBOX or Folders/Bills.")
-        .max(MAX_MAILBOX_FOLDER, "That folder name is too long."),
-      { error: "Add a folder to read, like INBOX or Folders/Bills." },
-    )
-    .min(1, "Add a folder to read, like INBOX or Folders/Bills.")
-    .max(MAX_MAILBOX_FOLDERS, `A mailbox can read up to ${MAX_MAILBOX_FOLDERS} folders.`),
+  folders: folderList.min(1, "Add a folder to read, like INBOX or Folders/Bills."),
   skipFolders: z
     .array(
       z
@@ -299,7 +301,7 @@ const mailboxSchema = z
   .transform(withFolderPaths);
 
 const testSchema = z
-  .object({ id: z.number().int().positive().optional(), ...connectionFields }, { error: MESSAGES.badShape })
+  .object({ id: z.number().int().positive().optional(), ...connectionFields, folders: folderList }, { error: MESSAGES.badShape })
   .transform(withFolderPaths);
 
 type MailboxFields = z.output<typeof mailboxSchema>;
@@ -831,15 +833,29 @@ function mailboxId(c: Context): number | null {
 
 const messageCount = (n: number) => (n === 1 ? "1 message" : `${n} messages`);
 
+/**
+ * A test's answer in plain words: each chosen folder's count, or why one could
+ * not be found. With no folders to read chosen yet (a new mailbox), how many
+ * there are to choose from.
+ */
+export function testAnswer({ folders, checked }: MailboxTest): MailboxTestResponse {
+  const problems = checked.flatMap((c) => ("problem" in c ? [c.problem] : []));
+  if (problems.length > 0) return { ok: false, message: `Signed in, but: ${problems.join(" ")}`, folders };
+  const counts = checked.map((c) => `"${c.folder}"${c.leftOut ? " (left out)" : ""} has ${messageCount("messages" in c ? c.messages : 0)}`);
+  const choose = checked.some((c) => !c.leftOut)
+    ? ""
+    : folders.length === 0
+      ? " No folders were found in this mailbox."
+      : ` Found ${folders.length === 1 ? "1 folder" : `${folders.length} folders`}: choose the ones to read.`;
+  const message =
+    counts.length === 0 ? `Signed in.${choose}` : counts.length === 1 ? `Signed in. The folder ${counts[0]}.${choose}` : `Signed in. ${counts.join(", ")}.${choose}`;
+  return { ok: true, message, folders };
+}
+
 /** Tries a connection, with an answer in plain words whatever happens. */
 async function runTest(connection: TestConnection): Promise<MailboxTestResponse> {
   try {
-    const { folders, checked } = await testMailbox(connection);
-    const problems = checked.flatMap((c) => ("problem" in c ? [c.problem] : []));
-    if (problems.length > 0) return { ok: false, message: `Signed in, but: ${problems.join(" ")}`, folders };
-    const counts = checked.map((c) => `"${c.folder}"${c.leftOut ? " (left out)" : ""} has ${messageCount("messages" in c ? c.messages : 0)}`);
-    const message = counts.length === 1 ? `Signed in. The folder ${counts[0]}.` : `Signed in. ${counts.join(", ")}.`;
-    return { ok: true, message, folders };
+    return testAnswer(await testMailbox(connection));
   } catch (err) {
     const message = err instanceof MailboxError ? err.message : `Could not connect: ${err instanceof Error ? err.message : String(err)}`;
     return { ok: false, message, folders: [] };

@@ -2,13 +2,17 @@
 // value with the label it was found by), with the email's own words around
 // each value, marked, so a person can see why it was picked. When the email
 // has a biller, each value has Fix, to choose the right one (see FixValue).
+// Right after a Fix, the page can say there what pairing found (`afterFix`).
+// A reminder says it is not sent to OurHome, and the page can add the button
+// to use it as the bill (`asBillAction`, see AsBill.tsx).
 
 import { Pencil } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
-import type { BillerMatch } from "../../../src/shared/api";
+import type { AsBillMark, BillerMatch } from "../../../src/shared/api";
 import { FIELDS, type Extraction, type FieldName, type PickedField, type PickedValue } from "../../../src/shared/extraction";
 import { Button, DetailRow, Notice } from "../components/ui";
 import { plural } from "../format";
+import { AsBillNotice } from "./AsBill";
 import { Said, Where } from "./EmailWords";
 import { FixValue } from "./FixValue";
 import { EXPECTED_FIELDS, FIELD_LABELS, formatPicked, isCredit, KIND_LABELS } from "./picked";
@@ -135,15 +139,27 @@ export function PickedOut({
   extraction,
   captureId,
   biller = null,
+  afterFix,
+  asBill = null,
+  asBillByBiller = false,
+  asBillAction,
 }: {
   extraction: Extraction;
   /** The email's id; with a biller, it turns on Fix. */
   captureId?: string;
   biller?: BillerMatch | null;
+  /** Shown under the saved line right after a Fix, given when it was saved (ms): the page says there what pairing found. */
+  afterFix?: (savedAt: number) => ReactNode;
+  /** A person's mark that this reminder is the bill, when it stands. */
+  asBill?: AsBillMark | null;
+  /** This reminder is the bill because its biller's reminders are its bills. */
+  asBillByBiller?: boolean;
+  /** The page's button to use a reminder as the bill, or take that off (AsBillButton). */
+  asBillAction?: ReactNode;
 }) {
   const headingId = useId();
   const [open, setOpen] = useState<FieldName | null>(null);
-  const [saved, setSaved] = useState<string | null>(null);
+  const [saved, setSaved] = useState<{ message: string; at: number } | null>(null);
   const { fields, kind, kindReason, pieces } = extraction;
   const found = new Set(fields.map((f) => f.field));
   const dueNow = extraction.dueNow !== null;
@@ -168,7 +184,7 @@ export function PickedOut({
         },
         onSaved: (message) => {
           setOpen(null);
-          setSaved(message);
+          setSaved({ message, at: Date.now() });
         },
       }
     : null;
@@ -192,14 +208,11 @@ export function PickedOut({
       <div className="mt-3 flex flex-col gap-2 empty:hidden">
         {saved ? (
           <Notice tone="info" live>
-            {saved}
+            {saved.message}
           </Notice>
         ) : null}
-        {kind === "reminder" ? (
-          <Notice tone="info">
-            A reminder of a bill already sent. Reminders are not sent to OurHome, so the bill is not counted twice.
-          </Notice>
-        ) : null}
+        {saved && afterFix ? afterFix(saved.at) : null}
+        <AsBillNotice kind={kind} asBill={asBill} byBiller={asBillByBiller ? (biller?.name ?? null) : null} action={asBillAction} />
         {credit ? <Notice tone="info">This is a credit: nothing is owed. Credits are not sent to OurHome.</Notice> : null}
         {extraction.dueNow ? (
           <Notice tone="warning">
@@ -259,7 +272,7 @@ export function PickedOut({
       <p className="mt-3 border-t border-line pt-3 text-sm text-muted">
         Found by the built-in reader, which looks for the labels billers use, such as Amount Due and Due Date
         {byRule && biller ? `, and by your rules for ${biller.name}` : ""}.
-        {fix ? ` If a value is wrong or missing, use Fix: your choice is used for every email from ${biller!.name}.` : ""}
+        {fix ? ` If a value is wrong or missing, use Fix: your choice is used for other emails from ${biller!.name} too.` : ""}
         {captureId !== undefined && biller === null ? " To fix a value, first add this email's sender to a biller." : ""}
         {extraction.source === "html" ? " Each value is also marked in the Email tab." : ""}
         {extraction.source === "text" ? " Each value is also marked in the Text tab." : ""}

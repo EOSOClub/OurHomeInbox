@@ -27,6 +27,7 @@ describe("openDatabase", () => {
       "biller_rules",
       "biller_senders",
       "billers",
+      "capture_as_bill",
       "capture_reviews",
       "capture_tags",
       "handoff_connections",
@@ -78,6 +79,36 @@ describe("openDatabase", () => {
       { name: "Proton bills", folder: "Folders/Bills", slug: "proton-bills", position: 0, removed_at: null },
     ]);
     expect(db.all<{ name: string }>("PRAGMA table_info(mailboxes)").map((c) => c.name)).not.toContain("folder");
+    db.close();
+  });
+
+  it("keeps every biller rule as one used always when a field can have several (schema 17)", () => {
+    const path = join(dir, "app.db");
+    const old = new DatabaseSync(path);
+    for (const [i, sql] of MIGRATIONS.slice(0, 16).entries()) {
+      old.exec(sql);
+      old.exec(`PRAGMA user_version = ${i + 1}`);
+    }
+    const stamp = "2026-10-29T00:00:00.000Z";
+    old.exec(`INSERT INTO households (id, name, created_at) VALUES (1, 'Home', '${stamp}')`);
+    old.exec(`INSERT INTO billers (id, household_id, name, kind, created_at, updated_at) VALUES (1, 1, 'Xcel Energy', 'bill', '${stamp}', '${stamp}')`);
+    old.exec(
+      `INSERT INTO biller_rules (biller_id, household_id, field, label, created_at)
+       VALUES (1, 1, 'amount', 'know that a payment of', '${stamp}'), (1, 1, 'paidDate', 'X on', '${stamp}')`,
+    );
+    old.close();
+
+    const db = openDatabase(path);
+    expect(db.all("SELECT field, label, use_when FROM biller_rules ORDER BY id")).toEqual([
+      { field: "amount", label: "know that a payment of", use_when: "always" },
+      { field: "paidDate", label: "X on", use_when: "always" },
+    ]);
+    // A second rule for the field, used only where nothing else gives it; never a second one used always, or the same words twice.
+    db.run("INSERT INTO biller_rules (biller_id, household_id, field, label, use_when, created_at) VALUES (1, 1, 'amount', 'Past Due Balance', 'missing', ?)", stamp);
+    expect(() => db.run("INSERT INTO biller_rules (biller_id, household_id, field, label, created_at) VALUES (1, 1, 'amount', 'Total', ?)", stamp)).toThrow();
+    expect(() =>
+      db.run("INSERT INTO biller_rules (biller_id, household_id, field, label, use_when, created_at) VALUES (1, 1, 'amount', 'past due balance', 'missing', ?)", stamp),
+    ).toThrow();
     db.close();
   });
 

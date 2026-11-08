@@ -4,18 +4,24 @@
 // the payment it may repeat, when there is one), or "Same payment as" another
 // payment email (a second email about it, never sent), and
 // Choose a bill (the picker, BillPicker.tsx) until it has been sent to
-// OurHome. On a bill: "Paid by the Oct 28 payment", or what OurHome reported a
-// person did to it there. PaymentSummary is the plain version for the email's
+// OurHome. On a bill: "Paid by the Oct 28 payment" (or by two payments, when
+// paid in parts), or what OurHome reported a person did to it there. A bill
+// paid only in part says "Partly paid" with what is still owed, on the bill
+// and on its payment (owner, 2026-11-07). A bill's page has Choose its payment
+// (Change its payment once paid in full; the picker, PaymentPicker.tsx),
+// unless OurHome reported it paid or removed. PaymentSummary is the plain version for the email's
 // view on its own (no links, no buttons); PaymentEditor is the page's.
 
 import { CircleCheck, Clock, Copy, Link2, Lock } from "lucide-react";
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import type { CaptureDetailResponse } from "../../../src/shared/api";
-import type { BillSide, PaymentInfo, PaymentRef, PaymentSide } from "../../../src/shared/payments";
+import type { BillSide, PartPaid, PaymentInfo, PaymentRef, PaymentSide } from "../../../src/shared/payments";
 import { capturePagePath } from "../api";
 import { Button } from "../components/ui";
+import { formatMoney } from "../mail/picked";
 import { BillPicker } from "./BillPicker";
+import { PaymentPicker } from "./PaymentPicker";
 import { formatShortDate, howLine } from "./paymentText";
 
 /** Shows another email: a link on the page, plain words in the view on its own. */
@@ -109,10 +115,13 @@ function PaymentLines({ payment, emailRef }: { payment: PaymentSide; emailRef: E
   }
   const how = howLine(payment);
   // "the Oct 6 bill", or for one payment for several: "the Aug 6 and Sep 8 bills", each day a link.
+  // A part payment of one bill: "part of the Oct 6 bill".
   const all = [payment.bill, ...payment.alsoBills];
+  const { part } = payment;
+  const partDay = part ? formatShortDate(all.find((bill) => bill.id === part.billId)?.date ?? payment.bill.date) : null;
   const days = all.map((bill, i) => {
     const day = formatShortDate(bill.date);
-    const text = all.length === 1 ? `the ${day} bill` : i === 0 ? `the ${day}` : day;
+    const text = all.length === 1 ? `${part ? "part of " : ""}the ${day} bill` : i === 0 ? `the ${day}` : day;
     const joiner = i === 0 ? null : i === all.length - 1 ? " and " : ", ";
     return (
       <span key={bill.id}>
@@ -132,22 +141,63 @@ function PaymentLines({ payment, emailRef }: { payment: PaymentSide; emailRef: E
           </span>
         </span>
         {payment.paidLate ? <span className="rounded border border-warn-line bg-warn-soft px-1.5 text-xs font-medium text-warn">Paid late</span> : null}
+        {part ? <PartBadge /> : null}
       </span>
+      {part ? (
+        <span className="block text-sm text-muted">
+          {all.length > 1 ? `The ${partDay} bill is paid only in part: ` : ""}
+          {partText(part)} When the rest is paid, choose this bill for that payment email too.
+        </span>
+      ) : null}
       {how ? <span className="block text-sm text-muted">{how}</span> : null}
     </>
   );
 }
 
+function PartBadge() {
+  return <span className="rounded border border-warn-line bg-warn-soft px-1.5 text-xs font-medium text-warn">Partly paid</span>;
+}
+
+/** "$90.00 paid so far, $50.00 still owed." */
+function partText(part: PartPaid): string {
+  return `${formatMoney(part.paid.toFixed(2))} paid so far, ${formatMoney(part.owed.toFixed(2))} still owed.`;
+}
+
 function BillLines({ bill, emailRef }: { bill: BillSide; emailRef: EmailRef }) {
   const lines: ReactNode[] = [];
   if (bill.paidBy) {
-    const day = formatShortDate(bill.paidBy.date);
+    // "the Oct 28 payment", or paid in parts: "the Oct 28 and Nov 2 payments", each day a link.
+    const all = [bill.paidBy, ...bill.alsoPaidBy];
+    const days = all.map((payer, i) => {
+      const day = formatShortDate(payer.date);
+      const text = all.length === 1 ? `the ${day} payment` : i === 0 ? `the ${day}` : day;
+      const joiner = i === 0 ? null : i === all.length - 1 ? " and " : ", ";
+      return (
+        <span key={payer.id}>
+          {joiner}
+          {emailRef(payer.id, text, `Open the ${day} payment`)}
+        </span>
+      );
+    });
     lines.push(
-      <span key="paid" className="flex items-center gap-1.5 font-medium">
-        <CircleCheck aria-hidden className="size-4 shrink-0 text-accent" />
-        <span>Paid by {emailRef(bill.paidBy.id, `the ${day} payment`, `Open the ${day} payment`)}</span>
+      <span key="paid" className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="inline-flex items-center gap-1.5 font-medium">
+          <CircleCheck aria-hidden className="size-4 shrink-0 text-accent" />
+          <span>
+            {bill.part ? "Partly paid" : "Paid"} by {days}
+            {all.length > 1 ? " payments" : null}
+          </span>
+        </span>
+        {bill.part ? <PartBadge /> : null}
       </span>,
     );
+    if (bill.part) {
+      lines.push(
+        <span key="part" className="block text-sm text-muted">
+          {partText(bill.part)} When the rest is paid, choose this bill for that payment email too.
+        </span>,
+      );
+    }
   }
   if (bill.ourhome) {
     const text = bill.ourhome.change === "paid" ? "Paid in OurHome by hand" : "Removed in OurHome";
@@ -179,7 +229,34 @@ export function PaymentEditor({ detail }: { detail: CaptureDetailResponse & { pa
   }, []);
   const { payment } = detail;
 
-  if (payment.role === "bill") return <BillLines bill={payment} emailRef={linkRef} />;
+  if (payment.role === "bill") {
+    return (
+      <div className="flex min-w-0 flex-col gap-2">
+        <div>
+          <BillLines bill={payment} emailRef={linkRef} />
+        </div>
+        {/* Paid or removed in OurHome: nothing to choose here. */}
+        {payment.ourhome ? null : (
+          <div ref={opener}>
+            <Button
+              variant="secondary"
+              className="px-3 py-1"
+              onClick={() => {
+                setMessage("");
+                setOpen(true);
+              }}
+            >
+              {payment.paidBy && !payment.part ? "Change its payment" : "Choose its payment"}
+            </Button>
+          </div>
+        )}
+        <p role="status" className={message ? "text-sm text-muted" : "sr-only"}>
+          {message}
+        </p>
+        {open ? <PaymentPicker billId={detail.id} biller={detail.biller?.name ?? null} onClose={close} /> : null}
+      </div>
+    );
+  }
   return (
     <div className="flex min-w-0 flex-col gap-2">
       <div>

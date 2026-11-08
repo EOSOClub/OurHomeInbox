@@ -1,7 +1,9 @@
 // The page for one captured email: reads the email's address from the page
 // URL, fetches it, and shows it with CaptureDetailView, with buttons to mark
 // it checked or not a bill (CaptureReviewEditor), its tags to add and take
-// off (CaptureTagEditor), and, for a payment, Choose a bill (PaymentEditor).
+// off (CaptureTagEditor), for a payment Choose a bill and for a bill Choose
+// its payment (PaymentEditor), for a reminder Use as the bill (AsBillButton),
+// and, right after a Fix, what pairing found then (MatchAfterFix).
 // "Back to captured mail" returns to the
 // list with the search and filters it was opened from. Under the details:
 // its biller, or, when no biller matches, buttons to start a biller from the
@@ -13,10 +15,12 @@ import { Link, useLocation, useNavigate, useParams } from "react-router";
 import type { CaptureDetailResponse } from "../../../src/shared/api";
 import { addSenderPathFrom, newBillerPathFrom } from "../billers";
 import { Button, buttonClasses, ErrorState, LoadingState } from "../components/ui";
+import { AsBillButton } from "../mail/AsBill";
 import { listPathFrom } from "../mail/captureList";
 import { CaptureDetailView } from "../mail/CaptureDetailView";
 import { CaptureTagEditor } from "../mail/CaptureTagEditor";
 import { CaptureReviewEditor } from "../mail/CaptureReview";
+import { MatchAfterFix } from "../payments/MatchAfterFix";
 import { PaymentEditor } from "../payments/PaymentLine";
 import { useBillers, useCapture } from "../queries";
 
@@ -98,6 +102,8 @@ export function CaptureDetailPage() {
           tags={<CaptureTagEditor detail={capture.data} />}
           review={<CaptureReviewEditor detail={capture.data} />}
           payment={capture.data.payment ? <PaymentEditor detail={{ ...capture.data, payment: capture.data.payment }} /> : undefined}
+          afterFix={(savedAt) => <MatchAfterFix captureId={capture.data.id} savedAt={savedAt} />}
+          asBillAction={<AsBillButton detail={capture.data} />}
           // An email with no biller and no From address has nothing to offer here.
           actions={capture.data.biller || newBillerPathFrom(capture.data.capture.from) ? <BillerActions detail={capture.data} /> : undefined}
         />

@@ -88,6 +88,8 @@ function stubServer(options: { failWith?: string } = {}) {
     sender: checkSender(capture),
     invoice: null,
     extraction: extract(capture),
+    asBill: null,
+    asBillByBiller: false,
     tags: [],
     review: reviews.get(idOf(capture)) ?? null,
     handoff: HANDOFF_WAITS,

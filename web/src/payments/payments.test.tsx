@@ -10,7 +10,8 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CaptureDetailResponse } from "../../../src/shared/api";
-import type { BillChoice, BillChoicesResponse, PaymentInfo, PaymentSide } from "../../../src/shared/payments";
+import type { BillChoice, BillChoicesResponse, PaymentChoice, PaymentChoicesResponse, PaymentInfo, PaymentSide } from "../../../src/shared/payments";
+import { MatchAfterFix } from "./MatchAfterFix";
 import { PaymentEditor, PaymentSummary } from "./PaymentLine";
 
 afterEach(() => {
@@ -54,6 +55,7 @@ const PAIRED: PaymentSide = {
   role: "payment",
   bill: { id: "proton-bills/1700000000/1", date: "2026-10-06T12:00:00.000Z", amount: 80 },
   alsoBills: [],
+  part: null,
   how: "auto",
   paidLate: false,
   needsBill: false,
@@ -67,6 +69,7 @@ const NEEDS_BILL: PaymentSide = {
   role: "payment",
   bill: null,
   alsoBills: [],
+  part: null,
   how: null,
   paidLate: false,
   needsBill: true,
@@ -88,6 +91,7 @@ function choice(id: number, day: string, more: Partial<BillChoice> = {}): BillCh
     id: `proton-bills/1700000000/${id}`,
     date: `${day}T12:00:00.000Z`,
     amount: 80,
+    owed: more.amount === undefined ? 80 : more.amount,
     state: "unpaid",
     canPick: true,
     reason: null,
@@ -111,6 +115,43 @@ const CHOICES: BillChoicesResponse = {
     choice(1, "2026-10-06", { state: "paired", canPick: false, reason: "Another payment already pays this bill.", paidByDate: "2026-10-08T12:00:00.000Z" }),
     choice(3, "2026-09-06", { state: "unusable", canPick: false, amount: null, reason: "Its amount is not settled. Use Fix on its amount first." }),
     choice(7, "2026-08-06", { state: "removed", canPick: false, reason: "This bill was removed in OurHome." }),
+  ],
+};
+
+const BILL_ID = "proton-bills/1700000000/1";
+const BILL_API = `/api/captures/${BILL_ID}`;
+
+function paymentChoice(id: number, day: string, more: Partial<PaymentChoice> = {}): PaymentChoice {
+  return {
+    id: `proton-bills/1700000000/${id}`,
+    date: `${day}T12:00:00.000Z`,
+    amount: 80,
+    state: "free",
+    canPick: true,
+    reason: null,
+    pays: [],
+    biller: "City Water",
+    sender: "City Water",
+    subject: `Payment received ${id}`,
+    paidDate: day,
+    ...more,
+  };
+}
+
+const PAYMENT_CHOICES: PaymentChoicesResponse = {
+  biller: "City Water",
+  all: false,
+  billAmount: 80,
+  mode: "add",
+  blocked: null,
+  payments: [
+    paymentChoice(5, "2026-10-15", { state: "other", pays: [{ id: "proton-bills/1700000000/7", date: "2026-08-06T12:00:00.000Z" }] }),
+    paymentChoice(6, "2026-10-02", {
+      state: "locked",
+      canPick: false,
+      reason: "This payment has been sent to OurHome; change it there.",
+      pays: [{ id: "proton-bills/1700000000/8", date: "2026-09-06T12:00:00.000Z" }],
+    }),
   ],
 };
 
@@ -178,6 +219,22 @@ describe("a payment's line", () => {
     cleanup();
     render(<PaymentSummary payment={{ ...NEEDS_BILL, maybeDuplicateOf: ORIGINAL, staleChoice: true }} />);
     expect(text()).not.toContain("It may be a second email");
+  });
+
+  it("says it pays part of its bill, with what is still owed (owner, 2026-11-07)", () => {
+    render(<PaymentSummary payment={{ ...PAIRED, how: "person", part: { billId: PAIRED.bill!.id, paid: 90, owed: 50 } }} />);
+    expect(text()).toMatch(/Pays part of the Oct 6(, 2026)? bill/);
+    expect(text()).toContain("Partly paid");
+    expect(text()).toContain("$90.00 paid so far, $50.00 still owed. When the rest is paid, choose this bill for that payment email too.");
+    cleanup();
+    // One payment for several bills whose last is short: that one is named.
+    const also = { id: "proton-bills/1700000000/2", date: "2026-11-06T12:00:00.000Z", amount: 80 };
+    render(<PaymentSummary payment={{ ...PAIRED, how: "person", alsoBills: [also], part: { billId: also.id, paid: 30, owed: 50 } }} />);
+    expect(text()).toMatch(/Pays the Oct 6(, 2026)? and Nov 6(, 2026)? bills/);
+    expect(text()).toMatch(/The Nov 6(, 2026)? bill is paid only in part: \$30\.00 paid so far, \$50\.00 still owed\./);
+    cleanup();
+    render(<PaymentSummary payment={PAIRED} />);
+    expect(text()).not.toContain("Partly paid");
   });
 
   it("is locked once sent to OurHome: no Choose a bill", () => {
@@ -271,6 +328,30 @@ describe("the picker", () => {
     expect(unusable.textContent).toContain("Its amount is not settled. Use Fix on its amount first.");
   });
 
+  it("lets a bill another payment pays part of be picked, counting what is still owed (owner, 2026-11-07)", async () => {
+    const part: BillChoicesResponse = {
+      ...CHOICES,
+      paymentAmount: 60,
+      bills: [choice(1, "2026-10-06", { amount: 140, owed: 50, state: "part", paidByDate: "2026-10-20T12:00:00.000Z" })],
+    };
+    const sent = stub({
+      [`GET ${API}/bill-choices`]: () => reply(200, part),
+      [`PUT ${API}/pairing`]: () => reply(200, { payment: { ...NEEDS_BILL, needsBill: false, how: "person" } }),
+    });
+    show(<PaymentEditor detail={detail(NEEDS_BILL)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose a bill" }));
+    const dialog = await screen.findByRole("dialog");
+    const row = await within(dialog).findByRole("button", { name: /^Oct 6(, 2026)? bill, \$140\.00, Partly paid by the Oct 20(, 2026)? payment, \$50\.00 still owed$/ });
+    expect((row as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(row);
+    const preview = within(dialog).getByRole("region", { name: "The selected bill" });
+    expect(preview.textContent).toContain("$50.00, after the other payments on it");
+    expect(within(dialog).getByRole("status").textContent).toBe("1 bill selected: $50.00 still owed, $10.00 less than the $60.00 payment.");
+    fireEvent.click(within(preview).getByRole("button", { name: "Pick this bill" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent.find(([m]) => m === "PUT")?.[2]).toEqual({ choice: "bill", billId: "proton-bills/1700000000/1" });
+  });
+
   it("closes on Escape without changing anything, and gives focus back", async () => {
     const sent = stub({ [`GET ${API}/bill-choices`]: () => reply(200, CHOICES) });
     show(<PaymentEditor detail={detail(PAIRED)} />);
@@ -321,20 +402,143 @@ describe("the picker", () => {
 
 describe("a bill's line", () => {
   it("says which payment pays it, as a link", () => {
-    show(<PaymentEditor detail={detail({ role: "bill", paidBy: { id: "proton-bills/1700000000/9", date: "2026-10-28T14:03:11.000Z" }, ourhome: null }, "proton-bills/1700000000/1")} />);
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy: { id: "proton-bills/1700000000/9", date: "2026-10-28T14:03:11.000Z" }, alsoPaidBy: [], part: null, ourhome: null }, "proton-bills/1700000000/1")} />);
     expect(text()).toMatch(/Paid by the Oct 28(, 2026)? payment/);
+    expect(text()).not.toContain("Partly paid");
     expect(screen.getByRole("link", { name: /^Open the Oct 28(, 2026)? payment$/ }).getAttribute("href")).toBe("/mail/proton-bills/1700000000/9");
     expect(screen.queryByRole("button", { name: "Choose a bill" })).toBeNull();
   });
 
+  it("says it is partly paid with what is still owed, then paid by both payments (owner, 2026-11-07)", () => {
+    const first = { id: "proton-bills/1700000000/9", date: "2026-10-20T14:03:11.000Z" };
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy: first, alsoPaidBy: [], part: { billId: "proton-bills/1700000000/1", paid: 90, owed: 50 }, ourhome: null }, "proton-bills/1700000000/1")} />);
+    expect(text()).toMatch(/Partly paid by the Oct 20(, 2026)? payment/);
+    expect(text()).toContain("$90.00 paid so far, $50.00 still owed.");
+    cleanup();
+    const second = { id: "proton-bills/1700000000/10", date: "2026-10-28T14:03:11.000Z" };
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy: first, alsoPaidBy: [second], part: null, ourhome: null }, "proton-bills/1700000000/1")} />);
+    expect(text()).toMatch(/^Paid by the Oct 20(, 2026)? and Oct 28(, 2026)? payments/);
+    expect(text()).not.toContain("Partly paid");
+    expect(screen.getByRole("link", { name: /^Open the Oct 28(, 2026)? payment$/ }).getAttribute("href")).toBe("/mail/proton-bills/1700000000/10");
+  });
+
+  it("offers Choose its payment, or Change its payment once paid in full, but not once OurHome reported it", () => {
+    const paidBy = { id: "proton-bills/1700000000/9", date: "2026-10-28T14:03:11.000Z" };
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: null }, BILL_ID)} />);
+    expect(screen.getByRole("button", { name: "Choose its payment" })).toBeTruthy();
+    cleanup();
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy, alsoPaidBy: [], part: null, ourhome: null }, BILL_ID)} />);
+    expect(screen.getByRole("button", { name: "Change its payment" })).toBeTruthy();
+    cleanup();
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy, alsoPaidBy: [], part: { billId: BILL_ID, paid: 40, owed: 40 }, ourhome: null }, BILL_ID)} />);
+    expect(screen.getByRole("button", { name: "Choose its payment" })).toBeTruthy();
+    cleanup();
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: { change: "removed", at: "2026-11-03T15:20:00.000Z" } }, BILL_ID)} />);
+    expect(screen.queryByRole("button", { name: /its payment/ })).toBeNull();
+  });
+
+  it("picks a payment for the bill after showing it, and says what picking it does", async () => {
+    const sent = stub({
+      [`GET ${BILL_API}/payment-choices`]: () => reply(200, PAYMENT_CHOICES),
+      [`PUT ${BILL_API}/payer`]: () => reply(200, { bill: { role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: null } }),
+    });
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: null }, BILL_ID)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose its payment" }));
+    const dialog = await screen.findByRole("dialog", { name: "Choose its payment" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    const locked = await within(dialog).findByRole("button", { name: /^Oct 2(, 2026)? payment, \$80\.00, Sent to OurHome, pays the Sep 6(, 2026)? bill, / });
+    expect((locked as HTMLButtonElement).disabled).toBe(true);
+    const moving = within(dialog).getByRole("button", { name: /^Oct 15(, 2026)? payment, \$80\.00, Pays the Aug 6(, 2026)? bill$/ });
+    fireEvent.click(moving);
+    const preview = within(dialog).getByRole("region", { name: "The selected payment" });
+    expect(preview.textContent).toMatch(/It pays the Aug 6(, 2026)? bill now: picking it moves it to this bill only\. It is added to what pays this bill\./);
+    expect(preview.textContent).toContain("Oct 15, 2026");
+    fireEvent.click(within(preview).getByRole("button", { name: "Pick this payment" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent.find(([m]) => m === "PUT")?.[2]).toEqual({ paymentId: "proton-bills/1700000000/5" });
+    expect(await screen.findByText(/Saved: the Oct 15(, 2026)? payment pays this bill\./)).toBeTruthy();
+  });
+
+  it("says it takes the place of both payments when two pay the bill in full (Xcel Energy, seen 2026-11-07)", async () => {
+    const two: PaymentChoicesResponse = {
+      ...PAYMENT_CHOICES,
+      mode: "replace",
+      payments: [paymentChoice(9, "2026-11-06", { amount: 90 }), paymentChoice(3, "2026-10-15", { state: "this", canPick: false }), paymentChoice(2, "2026-10-15", { state: "this", canPick: false })],
+    };
+    stub({ [`GET ${BILL_API}/payment-choices`]: () => reply(200, two) });
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: null }, BILL_ID)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose its payment" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(await within(dialog).findByRole("button", { name: /^Nov 6(, 2026)? payment/ }));
+    expect(within(dialog).getByRole("region", { name: "The selected payment" }).textContent).toContain("It takes the place of the 2 payments that pay this bill now.");
+  });
+
+  it("says why nothing can be picked when a sent payment pays the bill in full", async () => {
+    const blocked = "A payment already sent to OurHome pays this bill, so its payment can only be changed in OurHome.";
+    stub({ [`GET ${BILL_API}/payment-choices`]: () => reply(200, { ...PAYMENT_CHOICES, mode: "replace", blocked, payments: [] }) });
+    show(<PaymentEditor detail={detail({ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: null }, BILL_ID)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose its payment" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText(blocked)).toBeTruthy();
+  });
+
   it("says what OurHome reported, with the date, or that nothing pays it yet", () => {
-    render(<PaymentSummary payment={{ role: "bill", paidBy: null, ourhome: { change: "paid", at: "2026-11-03T15:20:00.000Z" } }} />);
+    render(<PaymentSummary payment={{ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: { change: "paid", at: "2026-11-03T15:20:00.000Z" } }} />);
     expect(text()).toMatch(/Paid in OurHome by hand on Nov 3(, 2026)?\./);
     cleanup();
-    render(<PaymentSummary payment={{ role: "bill", paidBy: null, ourhome: { change: "removed", at: "2026-11-12T15:20:00.000Z" } }} />);
+    render(<PaymentSummary payment={{ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: { change: "removed", at: "2026-11-12T15:20:00.000Z" } }} />);
     expect(text()).toMatch(/Removed in OurHome on Nov 12(, 2026)?\./);
     cleanup();
-    render(<PaymentSummary payment={{ role: "bill", paidBy: null, ourhome: null }} />);
+    render(<PaymentSummary payment={{ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: null }} />);
     expect(text()).toContain("No payment email for it yet");
+  });
+});
+
+describe("right after a Fix (owner, 2026-11-07)", () => {
+  /** The email's page as the server answers it after the Fix. */
+  const page = (payment: PaymentInfo, id = PAYMENT_ID) => ({ [`GET /api/captures/${id}`]: () => reply(200, detail(payment, id)) });
+
+  it("says the bill it matched and offers Change its bill, which opens the picker", async () => {
+    stub({ ...page(PAIRED), [`GET ${API}/bill-choices`]: () => reply(200, CHOICES) });
+    show(<MatchAfterFix captureId={PAYMENT_ID} savedAt={0} />);
+    expect(await screen.findByText(/OurHomeInbox matched it to the Oct 6(, 2026)? bill\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Change its bill" }));
+    expect(await screen.findByRole("dialog", { name: "Choose its bill" })).toBeTruthy();
+  });
+
+  it("offers Choose a bill when none fits, and says what is still owed on a part payment", async () => {
+    stub(page(NEEDS_BILL));
+    show(<MatchAfterFix captureId={PAYMENT_ID} savedAt={0} />);
+    expect(await screen.findByText("No bill email fits it. Choose its bill, or mark it Paid on its own.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Choose a bill" })).toBeTruthy();
+    cleanup();
+    stub(page({ ...PAIRED, how: "person", part: { billId: PAIRED.bill!.id, paid: 90, owed: 50 } }));
+    show(<MatchAfterFix captureId={PAYMENT_ID} savedAt={0} />);
+    expect(await screen.findByText(/It pays the Oct 6(, 2026)? bill, as chosen in your household\. That pays only part of it: \$50\.00 is still owed\./)).toBeTruthy();
+  });
+
+  it("on a bill, says what pays it, or offers Choose its payment, which opens the payment picker", async () => {
+    stub({ ...page({ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: null }, BILL_ID), [`GET ${BILL_API}/payment-choices`]: () => reply(200, PAYMENT_CHOICES) });
+    show(<MatchAfterFix captureId={BILL_ID} savedAt={0} />);
+    expect(await screen.findByText("No payment email fits it yet.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Choose its payment" }));
+    expect(await screen.findByRole("dialog", { name: "Choose its payment" })).toBeTruthy();
+    cleanup();
+    const paidBy = { id: "proton-bills/1700000000/9", date: "2026-10-28T14:03:11.000Z" };
+    stub(page({ role: "bill", paidBy, alsoPaidBy: [], part: null, ourhome: null }, BILL_ID));
+    show(<MatchAfterFix captureId={BILL_ID} savedAt={0} />);
+    expect(await screen.findByText(/It is paid by the Oct 28(, 2026)? payment\./)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Change its payment" })).toBeTruthy();
+  });
+
+  it("says it is looking until the email has been read again since the Fix, and offers nothing once sent", async () => {
+    stub(page({ ...PAIRED, locked: true }));
+    show(<MatchAfterFix captureId={PAYMENT_ID} savedAt={Date.now() + 60_000} />);
+    expect(await screen.findByText("Looking again for what it pairs with...")).toBeTruthy();
+    cleanup();
+    stub(page({ ...PAIRED, locked: true }));
+    show(<MatchAfterFix captureId={PAYMENT_ID} savedAt={0} />);
+    expect(await screen.findByText("This payment has been sent to OurHome, so its bill can only be changed there.")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });

@@ -5,6 +5,8 @@
 
 import type {
   ApiError,
+  AsBillRequest,
+  AsBillResponse,
   Biller,
   BillerInput,
   BillerListResponse,
@@ -41,7 +43,7 @@ import type {
 } from "../../src/shared/api";
 import type { FieldName } from "../../src/shared/extraction";
 import type { AutoSendRequest, OurHomeConnection, OurHomeConnectionUpdate, OurHomeTokenRequest, OurHomeTokenResponse } from "../../src/shared/handoff";
-import type { BillChoicesResponse, PairingRequest, PairingResponse } from "../../src/shared/payments";
+import type { BillChoicesResponse, PairingRequest, PairingResponse, PayerRequest, PayerResponse, PaymentChoicesResponse } from "../../src/shared/payments";
 
 export class ApiRequestError extends Error {
   /** The HTTP status, or 0 when the server could not be reached. */
@@ -166,13 +168,16 @@ export const api = {
     request<FieldChoicesResponse>("GET", `${captureApiPath(id)}/choices/${field}`, { signal }),
   getBillerRules: (id: number, signal?: AbortSignal) => request<BillerRulesResponse>("GET", `/api/billers/${id}/rules`, { signal }),
   saveBillerRule: (id: number, field: FieldName, body: BillerRuleInput) => request<void>("PUT", `/api/billers/${id}/rules/${field}`, { body }),
-  deleteBillerRule: (id: number, field: FieldName) => request<void>("DELETE", `/api/billers/${id}/rules/${field}`),
+  /** Removes the field's rule on `label`. */
+  deleteBillerRule: (id: number, field: FieldName, label: string) =>
+    request<void>("DELETE", `/api/billers/${id}/rules/${field}?${new URLSearchParams({ label }).toString()}`),
   listTags: (signal?: AbortSignal) => request<TagListResponse>("GET", "/api/tags", { signal }),
   createTag: (body: TagInput) => request<Tag>("POST", "/api/tags", { body }),
   renameTag: (id: number, body: TagInput) => request<Tag>("PUT", `/api/tags/${id}`, { body }),
   deleteTag: (id: number) => request<void>("DELETE", `/api/tags/${id}`),
   changeCaptureTags: (body: CaptureTagsRequest) => request<CaptureTagsResponse>("POST", "/api/captures/tags", { body }),
   reviewCaptures: (body: CaptureReviewRequest) => request<CaptureReviewResponse>("PUT", "/api/captures/review", { body }),
+  setAsBill: (id: string, body: AsBillRequest) => request<AsBillResponse>("PUT", `${captureApiPath(id)}/as-bill`, { body }),
   listUsers: (signal?: AbortSignal) => request<UserListResponse>("GET", "/api/users", { signal }),
   addUser: (body: UserInput) => request<HouseholdUser>("POST", "/api/users", { body }),
   updateUser: (id: number, body: UserUpdate) => request<HouseholdUser>("PUT", `/api/users/${id}`, { body }),
@@ -186,4 +191,7 @@ export const api = {
   getBillChoices: (id: string, all: boolean, signal?: AbortSignal) =>
     request<BillChoicesResponse>("GET", `${captureApiPath(id)}/bill-choices${all ? "?all=1" : ""}`, { signal }),
   setPairing: (id: string, body: PairingRequest) => request<PairingResponse>("PUT", `${captureApiPath(id)}/pairing`, { body }),
+  getPaymentChoices: (id: string, all: boolean, signal?: AbortSignal) =>
+    request<PaymentChoicesResponse>("GET", `${captureApiPath(id)}/payment-choices${all ? "?all=1" : ""}`, { signal }),
+  setPayer: (id: string, body: PayerRequest) => request<PayerResponse>("PUT", `${captureApiPath(id)}/payer`, { body }),
 };

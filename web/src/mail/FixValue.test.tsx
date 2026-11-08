@@ -69,7 +69,7 @@ function stubServer(capture: Capture, rules: BillerRule[] = []) {
       const body: FieldChoicesResponse = {
         field,
         biller: BILLER,
-        rule: rules.find((r) => r.field === field) ?? null,
+        rules: rules.filter((r) => r.field === field),
         otherEmails: 0,
         choices: choicesFor(new PreparedEmail(capture), field, rules, []),
       };
@@ -96,6 +96,8 @@ function showEmail(capture: Capture, biller: BillerMatch | null = BILLER, rules:
     sender: checkSender(capture),
     invoice: null,
     extraction: extract(capture, rules),
+    asBill: null,
+    asBillByBiller: false,
     tags: [],
     review: null,
     handoff: HANDOFF_WAITS,
@@ -109,7 +111,7 @@ describe("Fix on an email", () => {
   it("lists the amounts in the email and saves the one chosen as a rule on the biller", async () => {
     const sent = stubServer(XCEL);
     const picked = showEmail(XCEL);
-    expect(picked.textContent).toContain("If a value is wrong or missing, use Fix: your choice is used for every email from Xcel Energy.");
+    expect(picked.textContent).toContain("If a value is wrong or missing, use Fix: your choice is used for other emails from Xcel Energy too.");
 
     fireEvent.click(within(picked).getByRole("button", { name: "Fix the amount" }));
     const fix = within(picked).getByRole("group", { name: "Which is the amount?" });
@@ -132,7 +134,33 @@ describe("Fix on an email", () => {
       'Saved. The amount in every email from Xcel Energy is now the value after "Current Charges".',
     );
     expect(within(picked).queryByRole("group")).toBeNull();
-    expect(sent.filter(([method]) => method === "PUT")).toEqual([["PUT", "/api/billers/3/rules/amount", { label: "Current Charges" }]]);
+    expect(sent.filter(([method]) => method === "PUT")).toEqual([["PUT", "/api/billers/3/rules/amount", { label: "Current Charges", when: "always" }]]);
+    // The amount was found here already, so a rule used only where none is found is not offered.
+    expect(fix.textContent).not.toContain("Use it");
+  });
+
+  it("offers to use a value the reader cannot find only where none is found otherwise, and saves it that way (2026-11-08)", async () => {
+    const reminder = { ...makeCapture("<table><tr><td>Past Due Balance: $3073.87</td></tr></table>"), subject: "Your Xcel Energy Bill Is Past Due" };
+    const sent = stubServer(reminder);
+    const picked = showEmail(reminder);
+    fireEvent.click(within(picked).getByRole("button", { name: "Fix the amount" }));
+    const fix = within(picked).getByRole("group", { name: "Which is the amount?" });
+    fireEvent.click(await within(fix).findByRole("radio", { name: /3,073\.87/ }));
+
+    const ways = within(fix).getByRole("group", { name: "Use it" });
+    const [missing, always] = within(ways).getAllByRole("radio");
+    expect(missing!.closest("label")?.textContent).toBe(
+      "Only in emails where no amount is found otherwiseThere are no other emails from Xcel Energy yet. New ones will use it too.",
+    );
+    expect(always!.closest("label")?.textContent).toMatch(/^In every email from Xcel Energy/);
+    expect(missing).toHaveProperty("checked", true);
+    fireEvent.click(within(fix).getByRole("button", { name: "Use this one" }));
+
+    expect(await within(picked).findByText(/^Saved\./)).toHaveProperty(
+      "textContent",
+      'Saved. In emails from Xcel Energy where no amount is found otherwise, the amount is now the value after "Past Due Balance".',
+    );
+    expect(sent.filter(([method]) => method === "PUT")).toEqual([["PUT", "/api/billers/3/rules/amount", { label: "Past Due Balance", when: "missing" }]]);
   });
 
   it("shows a value found by a rule, and removes the rule", async () => {
@@ -144,10 +172,11 @@ describe("Fix on an email", () => {
 
     fireEvent.click(within(picked).getByRole("button", { name: "Fix the amount" }));
     const fix = within(picked).getByRole("group", { name: "Which is the amount?" });
-    expect(await within(fix).findByText('Picked now by your rule: the value after "Current Charges".')).toBeTruthy();
+    expect(await within(fix).findByText("Your rule for the amount in emails from Xcel Energy:")).toBeTruthy();
+    expect(fix.textContent).toContain('The value after "Current Charges".');
     fireEvent.click(within(fix).getByRole("button", { name: "Remove the rule" }));
     expect(await within(picked).findByText(/^Rule removed\./)).toBeTruthy();
-    expect(sent.filter(([method]) => method === "DELETE")).toEqual([["DELETE", "/api/billers/3/rules/amount", undefined]]);
+    expect(sent.filter(([method]) => method === "DELETE")).toEqual([["DELETE", "/api/billers/3/rules/amount?label=Current+Charges", undefined]]);
   });
 
   it("picks out a value that is not shown, and says when the email has nothing to choose", async () => {
@@ -187,6 +216,7 @@ describe("the rules on a biller's page", () => {
     senders: ["xcelenergy.com"],
     notes: "",
     fetchInvoices: true,
+    remindersAreBills: false,
     autoSend: false,
     cleanChecks: 0,
     createdAt: "2026-10-29T00:00:00.000Z",
@@ -220,13 +250,17 @@ describe("the rules on a biller's page", () => {
 
   it("lists each rule with how often it is used, and removes one", async () => {
     const sent = showBillerPage({
-      rules: [{ field: "amount", label: "Current Charges", createdAt: "2026-10-30T08:00:00.000Z", usedOn: 2 }],
+      rules: [
+        { field: "amount", label: "Current Charges", when: "always", createdAt: "2026-10-30T08:00:00.000Z", usedOn: 2 },
+        { field: "amount", label: "Past Due Balance", when: "missing", createdAt: "2026-11-08T08:00:00.000Z", usedOn: 1 },
+      ],
       emails: 3,
     });
     const card = (await screen.findByRole("heading", { name: "Where values are found" })).closest("section")!;
     await waitFor(() => expect(card.textContent).toContain('AmountThe value after "Current Charges"Used in 2 of 3 emails'));
-    fireEvent.click(within(card).getByRole("button", { name: "Remove the rule for the amount" }));
-    await waitFor(() => expect(sent).toContainEqual(["DELETE", "/api/billers/3/rules/amount"]));
+    expect(card.textContent).toContain('AmountThe value after "Past Due Balance"Only in emails where no amount is found otherwiseUsed in 1 of 3 emails');
+    fireEvent.click(within(card).getByRole("button", { name: 'Remove the rule for the amount after "Past Due Balance"' }));
+    await waitFor(() => expect(sent).toContainEqual(["DELETE", "/api/billers/3/rules/amount?label=Past+Due+Balance"]));
   });
 
   it("says how to add one when there are none", async () => {

@@ -66,7 +66,7 @@
 
 import type { BillerKind } from "./billers.js";
 import type { Capture, CapturedAddress } from "./capture.js";
-import type { BillerRule, Extraction, ExtractionSummary, FieldChoice, FieldName } from "./extraction.js";
+import type { BillerRule, Extraction, ExtractionSummary, FieldChoice, FieldName, RuleWhen } from "./extraction.js";
 import type { HandoffInfo } from "./handoff.js";
 import type { InvoiceInfo, InvoiceOutcome } from "./invoice.js";
 import type { PaymentInfo } from "./payments.js";
@@ -161,6 +161,26 @@ export interface CaptureReview {
   at: string;
 }
 
+/**
+ * A person's mark that a reminder is the bill (owner, 2026-11-07): its bill
+ * email never came in, or the biller sends its bills as reminders. While it
+ * stands, the email is a bill everywhere: the list, pairing, and the hand-off.
+ */
+export interface AsBillMark {
+  /** Who marked it, or null when that account is gone. */
+  by: string | null;
+  at: string;
+}
+
+/** PUT /api/captures/:mailbox/:uidValidity/:uid/as-bill: true uses the reminder as the bill, false makes it a reminder again. */
+export interface AsBillRequest {
+  asBill: boolean;
+}
+
+export interface AsBillResponse {
+  asBill: AsBillMark | null;
+}
+
 /** Which biller an email was matched to, and on which of its senders. */
 export interface BillerMatch {
   id: number;
@@ -184,8 +204,12 @@ export interface CaptureDetailResponse {
   sender: SenderCheck;
   /** The invoice behind its "View Invoice" link, once that has been tried; null when it has not (or cannot be). */
   invoice: InvoiceInfo | null;
-  /** What the reader picked out of it with its biller's rules, and where each value was found. */
+  /** What the reader picked out of it with its biller's rules, and where each value was found. Its kind is "bill" while `asBill` stands. */
   extraction: Extraction;
+  /** Set while a person's mark makes this reminder the bill; null otherwise (also when the reader no longer takes it for a reminder, or its biller's setting already does). */
+  asBill: AsBillMark | null;
+  /** True when this reminder is the bill because its biller sends its bills as reminders (Biller.remindersAreBills). */
+  asBillByBiller: boolean;
   /** The household's tags on it, by name. */
   tags: TagRef[];
   /** Whether a person marked it checked or not a bill; null while it still needs a look. */
@@ -200,8 +224,8 @@ export interface CaptureDetailResponse {
 export interface FieldChoicesResponse {
   field: FieldName;
   biller: BillerMatch;
-  /** The biller's rule for this field now, or null when the built-in reader decides. */
-  rule: BillerRule | null;
+  /** The biller's rules for this field now: its "always" one first, then its "missing" ones in the order tried. Empty when the built-in reader decides. */
+  rules: BillerRule[];
   /** How many other captured emails come from this biller. */
   otherEmails: number;
   /** In the order they appear in the email. */
@@ -441,6 +465,8 @@ export interface Biller {
   notes: string;
   /** Get the invoice behind its emails' "View Invoice" links (see invoices.ts). */
   fetchInvoices: boolean;
+  /** It sends its bills as reminders: each of its reminders is used as the bill (see server/asBill.ts). */
+  remindersAreBills: boolean;
   /** Its clean emails go to OurHome without a person checking them (see shared/handoff.ts). */
   autoSend: boolean;
   /** Its current run of Checked emails that needed no fix (Send automatically is offered at CHECKS_BEFORE_AUTO). */
@@ -457,6 +483,8 @@ export interface BillerInput {
   notes?: string;
   /** On when left out. */
   fetchInvoices?: boolean;
+  /** Off when left out. */
+  remindersAreBills?: boolean;
 }
 
 export interface BillerListResponse {
@@ -477,9 +505,10 @@ export interface BillerRulesResponse {
   emails: number;
 }
 
-/** Saving a rule: the words the value comes after, as chosen in Fix. */
+/** Saving a rule: the words the value comes after, as chosen in Fix, and when it is used (always when left out). */
 export interface BillerRuleInput {
   label: string;
+  when?: RuleWhen;
 }
 
 /** A tag as an email carries it. */

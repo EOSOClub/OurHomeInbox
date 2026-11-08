@@ -25,6 +25,7 @@ export function formatShortDate(iso: string, now: Date = new Date(), options: Da
 export const BILL_STATE_LABELS: Record<BillChoiceState, string> = {
   unpaid: "Unpaid",
   this: "Paid by this payment",
+  part: "Partly paid by another payment",
   paired: "Paid by another payment",
   paid: "Paid in OurHome",
   removed: "Removed in OurHome",

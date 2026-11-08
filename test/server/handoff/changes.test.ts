@@ -279,7 +279,7 @@ describe("POST /api/handoff/changes", () => {
   it("takes a bill reported paid or removed out of pairing, and says so on its page", async () => {
     expect((await detail(3)).payment).toMatchObject({ bill: { id: id(1) }, how: "auto", paidLate: true });
     await report({ changes: [paid] });
-    expect((await detail(1)).payment).toEqual({ role: "bill", paidBy: null, ourhome: { change: "paid", at: "2026-11-03T15:20:00.000Z" } });
+    expect((await detail(1)).payment).toEqual({ role: "bill", paidBy: null, alsoPaidBy: [], part: null, ourhome: { change: "paid", at: "2026-11-03T15:20:00.000Z" } });
     // The unlocked automatic pairing falls away: the payment takes November's bill, on time.
     expect((await detail(3)).payment).toMatchObject({ bill: { id: id(2) }, paidLate: false, needsBill: false });
 

@@ -46,6 +46,13 @@ export function billEmail(
   return email(uid, `Your bill ${uid} is ready`, day, rows, options.power ? "City Power <billing@power.example>" : undefined, options.dateHeader, note);
 }
 
+/** A reminder of a bill ("Reminder: your bill is due"), with the bill's amount and, when given, its due date. */
+export function reminderEmail(uid: number, day: string, amount: string, options: { due?: string } = {}): Buffer {
+  const rows: Array<[string, string]> = [["Amount Due", `$${amount}`]];
+  if (options.due) rows.push(["Due Date", printed(options.due)]);
+  return email(uid, `Reminder: your bill ${uid} is due`, day, rows);
+}
+
 /** `paid: null` leaves the payment date out, so the payment's day is its email's day. */
 export function paymentEmail(uid: number, day: string, amount: string, options: { paid?: string | null; dateHeader?: string } = {}): Buffer {
   const rows: Array<[string, string]> = [["Amount Paid", `$${amount}`]];

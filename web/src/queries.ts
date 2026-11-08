@@ -13,6 +13,7 @@ export const queryKeys = {
   // Under the email, so whatever refreshes the email refreshes these too.
   choices: (id: string, field: FieldName) => ["captures", id, "choices", field] as const,
   billChoices: (id: string, all: boolean) => ["captures", id, "bill-choices", all] as const,
+  paymentChoices: (id: string, all: boolean) => ["captures", id, "payment-choices", all] as const,
   settings: ["settings"] as const,
   mailboxes: ["mailboxes"] as const,
   status: ["status"] as const,
@@ -127,6 +128,11 @@ export function useBillChoices(id: string, all: boolean) {
   return useQuery({ queryKey: queryKeys.billChoices(id, all), queryFn: ({ signal }) => api.getBillChoices(id, all, signal), staleTime: 0 });
 }
 
+/** The payments a bill's picker lists (Choose its payment). Fetched fresh each time the picker opens. */
+export function usePaymentChoices(id: string, all: boolean) {
+  return useQuery({ queryKey: queryKeys.paymentChoices(id, all), queryFn: ({ signal }) => api.getPaymentChoices(id, all, signal), staleTime: 0 });
+}
+
 /**
  * After a payment's bill is chosen (or the choice cleared): every email,
  * since the payment, the bill it left and the bill it took all change, and so
@@ -134,6 +140,16 @@ export function useBillChoices(id: string, all: boolean) {
  */
 export function refreshAfterPairing(client: QueryClient): void {
   void client.invalidateQueries({ queryKey: queryKeys.captures });
+}
+
+/**
+ * After a reminder is marked as the bill (or the mark taken off): every
+ * email, since the email's kind, what pays it, and its line about OurHome
+ * change, and a payment may pair with it. Resolves once they are fetched, so
+ * the page never shows the old state after the button.
+ */
+export function refreshAfterAsBill(client: QueryClient): Promise<void> {
+  return client.invalidateQueries({ queryKey: queryKeys.captures });
 }
 
 export function useBillerRules(id: number) {

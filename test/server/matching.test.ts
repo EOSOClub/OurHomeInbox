@@ -5,7 +5,7 @@ import type { BillerKind } from "../../src/shared/billers.js";
 
 let nextId = 1;
 function biller(name: string, senders: string[], kind: BillerKind = "bill"): Biller {
-  return { id: nextId++, name, kind, senders, notes: "", fetchInvoices: true, autoSend: false, cleanChecks: 0, createdAt: "", updatedAt: "" };
+  return { id: nextId++, name, kind, senders, notes: "", fetchInvoices: true, remindersAreBills: false, autoSend: false, cleanChecks: 0, createdAt: "", updatedAt: "" };
 }
 
 const from = (address: string, name = "") => [{ name, address }];

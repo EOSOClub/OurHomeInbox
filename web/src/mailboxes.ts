@@ -188,10 +188,10 @@ export function checkConnection(form: MailboxForm, saved: MailboxInfo | null): {
   }
   else if (form.password.length > MAX_MAILBOX_PASSWORD) errors.password = "That password is too long.";
   // A folder still in a box counts, so it is not lost by saving before Enter.
+  // None yet is fine for a test: it loads the mailbox's folders to choose from.
   const added = addFolder(form);
   const folders = added.form.folders;
   if (added.error) errors.folders = added.error;
-  else if (folders.length === 0) errors.folders = NO_FOLDER;
   const skipped = addFolder(added.form, "skipFolders");
   const skipFolders = skipped.form.skipFolders;
   if (skipped.error) errors.skipFolders = skipped.error;
@@ -219,6 +219,8 @@ export function checkMailboxForm(form: MailboxForm, saved: MailboxInfo | null): 
   if (!name) errors.name = "Enter a name for the mailbox.";
   else if (name.length > MAX_MAILBOX_NAME) errors.name = `Keep the name under ${MAX_MAILBOX_NAME} characters.`;
   else if (!/[\p{L}\p{N}]/u.test(name)) errors.name = "The name needs at least one letter or number.";
+  // Saving, unlike a test, needs a folder to read.
+  if (!errors.folders && addFolder(form).form.folders.length === 0) errors.folders = NO_FOLDER;
   if (Object.keys(errors).length > 0 || connection === null) return { errors, input: null };
   return { errors, input: { name, ...connection, enabled: form.enabled } };
 }

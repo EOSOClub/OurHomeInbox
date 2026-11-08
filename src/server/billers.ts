@@ -65,6 +65,7 @@ const billerSchema = z.object(
       .max(MAX_BILLER_NOTES, `Keep the notes under ${MAX_BILLER_NOTES} characters.`)
       .default(""),
     fetchInvoices: z.boolean({ error: MESSAGES.badShape }).default(true),
+    remindersAreBills: z.boolean({ error: MESSAGES.badShape }).default(false),
   },
   { error: MESSAGES.badShape },
 );
@@ -79,6 +80,7 @@ interface BillerRow {
   kind: BillerKind;
   notes: string;
   fetch_invoices: number;
+  reminders_are_bills: number;
   auto_send: number;
   clean_checks: number;
   created_at: string;
@@ -93,6 +95,7 @@ function toBiller(row: BillerRow, senders: string[]): Biller {
     senders,
     notes: row.notes,
     fetchInvoices: row.fetch_invoices !== 0,
+    remindersAreBills: row.reminders_are_bills !== 0,
     autoSend: row.auto_send !== 0,
     cleanChecks: row.clean_checks,
     createdAt: row.created_at,
@@ -100,7 +103,7 @@ function toBiller(row: BillerRow, senders: string[]): Biller {
   };
 }
 
-const BILLER_COLUMNS = `id, name, kind, notes, fetch_invoices, auto_send,
+const BILLER_COLUMNS = `id, name, kind, notes, fetch_invoices, reminders_are_bills, auto_send,
   (SELECT count(*) FROM biller_clean_checks c WHERE c.biller_id = billers.id) AS clean_checks, created_at, updated_at`;
 
 export function listBillers(db: Database, householdId: number): Biller[] {
@@ -190,12 +193,13 @@ export function billerRoutes(deps: BillerDeps): Hono<AppEnv> {
       const problem = conflict(db, householdId, fields, null);
       if (problem) return { problem };
       const id = db.run(
-        "INSERT INTO billers (household_id, name, kind, notes, fetch_invoices, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO billers (household_id, name, kind, notes, fetch_invoices, reminders_are_bills, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         householdId,
         fields.name,
         fields.kind,
         fields.notes,
         fields.fetchInvoices ? 1 : 0,
+        fields.remindersAreBills ? 1 : 0,
         stamp,
         stamp,
       ).lastInsertRowid;
@@ -224,11 +228,12 @@ export function billerRoutes(deps: BillerDeps): Hono<AppEnv> {
       const problem = conflict(db, householdId, fields, id);
       if (problem) return { problem };
       db.run(
-        "UPDATE billers SET name = ?, kind = ?, notes = ?, fetch_invoices = ?, updated_at = ? WHERE id = ?",
+        "UPDATE billers SET name = ?, kind = ?, notes = ?, fetch_invoices = ?, reminders_are_bills = ?, updated_at = ? WHERE id = ?",
         fields.name,
         fields.kind,
         fields.notes,
         fields.fetchInvoices ? 1 : 0,
+        fields.remindersAreBills ? 1 : 0,
         stamp,
         id,
       );

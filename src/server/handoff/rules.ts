@@ -2,7 +2,9 @@
 // with the reason in plain words, and the document OurHome gets when it goes.
 // The rules are the vault's "Hand-off" note, section 2 (owner, 2026-11-01):
 //
-//   Never: reminders (OurHome gets the bill itself), statements (nothing to
+//   Never: reminders (OurHome gets the bill itself; a reminder a person marked
+//   as the bill, or one from a biller whose reminders are its bills, reaches
+//   here as a bill, see asBill.ts), statements (nothing to
 //   pay), credits (nothing owed), emails marked Not a bill, and emails dated
 //   before the connection's start date.
 //   Waits: no amount, or two different amounts (Fix settles it; Checked alone
@@ -194,6 +196,9 @@ export function handoffDocument(input: HandoffInput): HandoffDocument {
 
 const CHECK = "Waits for someone to mark it Checked";
 
+export const REMINDER_REASON =
+  "Reminders are not sent: OurHome gets the bill itself. If the bill's own email never came in, use this reminder as the bill (in Picked out). If this biller sends all its bills as reminders, say so on the biller's page.";
+
 export const PAIRING_REASONS = {
   needsBill: "Needs a bill: no bill email fits this payment. On its page, use Choose a bill, or mark it Paid on its own.",
   staleChoice: "The bill chosen for this payment can no longer be used. Choose another.",
@@ -235,7 +240,7 @@ function checkDecision(input: HandoffInput): HandoffDecision {
   const never = (reason: string): HandoffDecision => ({ state: "never", reason });
   const waits = (reason: string): HandoffDecision => ({ state: "waits", reason });
 
-  if (item.picked.kind === "reminder") return never("Reminders are not sent: OurHome gets the bill itself.");
+  if (item.picked.kind === "reminder") return never(REMINDER_REASON);
   if (item.picked.kind === "statement") return never("Statements are not sent: there is nothing to pay.");
   if (item.review?.state === "not-bill") return never("Marked Not a bill.");
   if (startDate !== null) {

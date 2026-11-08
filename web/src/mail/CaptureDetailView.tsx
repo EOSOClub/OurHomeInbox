@@ -40,6 +40,8 @@ function SenderLine({ check }: { check: SenderCheck }) {
  * `tags` replaces the plain list of its tags, for the page to add the tag editor (which needs the server).
  * `review` replaces the plain line saying how it was reviewed, for the page to add the buttons that mark it.
  * `payment` replaces the plain line about which bill a payment pays (or what pays a bill), for the page to add links and Choose a bill.
+ * `afterFix` is shown in Picked out right after a Fix is saved, for the page to say what pairing found then.
+ * `asBillAction` is the button in Picked out to use a reminder as the bill (or take that off), for the page to add.
  */
 export function CaptureDetailView({
   detail,
@@ -47,12 +49,16 @@ export function CaptureDetailView({
   tags,
   review,
   payment,
+  afterFix,
+  asBillAction,
 }: {
   detail: CaptureDetailResponse;
   actions?: ReactNode;
   tags?: ReactNode;
   review?: ReactNode;
   payment?: ReactNode;
+  afterFix?: (savedAt: number) => ReactNode;
+  asBillAction?: ReactNode;
 }) {
   const { id, capture, extraction } = detail;
   const { invoice } = detail;
@@ -131,7 +137,15 @@ export function CaptureDetailView({
         </dl>
         {actions ? <div className="mt-3 flex flex-wrap gap-2 border-t border-line pt-3">{actions}</div> : null}
       </header>
-      <PickedOut extraction={extraction} captureId={id} biller={detail.biller} />
+      <PickedOut
+        extraction={extraction}
+        captureId={id}
+        biller={detail.biller}
+        afterFix={afterFix}
+        asBill={detail.asBill}
+        asBillByBiller={detail.asBillByBiller}
+        asBillAction={asBillAction}
+      />
       <Tabs items={tabs} label="Parts of this email" />
     </article>
   );

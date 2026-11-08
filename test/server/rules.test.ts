@@ -44,7 +44,7 @@ describe("Fix's choices", () => {
     const res = await get(`${EMAIL}/choices/amount`);
     expect(res.status).toBe(200);
     const body = await json<FieldChoicesResponse>(res);
-    expect(body).toMatchObject({ field: "amount", biller: { id: billerId, name: "Water Co" }, rule: null, otherEmails: 2 });
+    expect(body).toMatchObject({ field: "amount", biller: { id: billerId, name: "Water Co" }, rules: [], otherEmails: 2 });
     expect(body.choices.map((c) => [c.label, c.value.value, c.current, c.changes])).toEqual([
       ["Payment Amount", "194.26", true, 0],
       ["Current Charges", "202.63", false, 1],
@@ -87,12 +87,12 @@ describe("saving and removing a rule", () => {
     const detail = await json<CaptureDetailResponse>(await get(EMAIL));
     expect(detail.extraction.fields.find((f) => f.field === "amount")).toMatchObject({ by: "rule", values: [{ value: "202.63" }] });
     const choices = await json<FieldChoicesResponse>(await get(`${EMAIL}/choices/amount`));
-    expect(choices.rule).toEqual({ field: "amount", label: "Current Charges" });
+    expect(choices.rules).toEqual([{ field: "amount", label: "Current Charges", when: "always" }]);
     expect(choices.choices.find((c) => c.current)?.label).toBe("Current Charges");
 
     const rules = await json<BillerRulesResponse>(await get(`/api/billers/${billerId}/rules`));
     expect(rules).toEqual({
-      rules: [{ field: "amount", label: "Current Charges", createdAt: "2026-10-29T12:00:00.000Z", usedOn: 2 }],
+      rules: [{ field: "amount", label: "Current Charges", when: "always", createdAt: "2026-10-29T12:00:00.000Z", usedOn: 2 }],
       emails: 3,
     });
 
@@ -167,5 +167,70 @@ describe("saving and removing a rule", () => {
     expect((await put(`/api/billers/${theirs}/rules/amount`, { label: "Mine now" })).status).toBe(404);
     expect((await del(`/api/billers/${theirs}/rules/amount`)).status).toBe(404);
     expect(server.db.get<{ label: string }>("SELECT label FROM biller_rules WHERE biller_id = ?", theirs)?.label).toBe("Total");
+  });
+});
+
+describe("a rule used only where nothing else gives the field (2026-11-08)", () => {
+  // As Xcel Energy's: payments whose amount a rule picks, a statement the reader reads, and a past due reminder with no amount it knows.
+  async function saveXcel() {
+    const html = (...rows: string[]) => cells(...rows);
+    await saveEmail(server.store, rawEmail({ subject: "Your bill is past due", html: html("Past Due Balance: $3073.87", "Account: 1234") }), { uid: 1 });
+    await saveEmail(server.store, rawEmail({ subject: "Thank you for your payment", html: html("We want you to know that a payment of $90.00 was made", "Past Due Balance: $0.00") }), { uid: 2 });
+    await saveEmail(server.store, rawEmail({ subject: "Your statement is ready", html: html("Amount Due: $194.26", "Past Due Balance: $0.00") }), { uid: 3 });
+  }
+  const amounts = async () =>
+    Object.fromEntries((await json<CaptureListResponse>(await get("/api/captures"))).captures.map((c) => [c.uid, c.picked.amount]));
+
+  it("fills in the reminder's amount without changing the payments or the statement, beside the field's other rule", async () => {
+    const billerId = await addWaterBiller();
+    await saveXcel();
+    await put(`/api/billers/${billerId}/rules/amount`, { label: "know that a payment of" });
+    expect(await amounts()).toEqual({ 1: null, 2: "90.00", 3: "194.26" });
+
+    // Fix offers both ways, each with what it changes: the "always" one would replace the payments' rule.
+    const { choices, rules } = await json<FieldChoicesResponse>(await get(`${EMAIL}/choices/amount`));
+    expect(rules).toEqual([{ field: "amount", label: "know that a payment of", when: "always" }]);
+    expect(choices.map((c) => [c.label, c.value.value, c.changes, c.changesWhenMissing])).toEqual([["Past Due Balance", "3073.87", 2, 0]]);
+
+    expect((await put(`/api/billers/${billerId}/rules/amount`, { label: "Past Due Balance", when: "missing" })).status).toBe(204);
+    expect(await amounts()).toEqual({ 1: "3073.87", 2: "90.00", 3: "194.26" });
+    const detail = await json<CaptureDetailResponse>(await get(EMAIL));
+    expect(detail.extraction.fields.find((f) => f.field === "amount")).toMatchObject({ by: "rule", values: [{ value: "3073.87", label: "Past Due Balance" }] });
+    const list = await json<BillerRulesResponse>(await get(`/api/billers/${billerId}/rules`));
+    expect(list.rules.map((r) => [r.label, r.when, r.usedOn])).toEqual([
+      ["know that a payment of", "always", 1],
+      ["Past Due Balance", "missing", 1],
+    ]);
+
+    // Removing one by its words leaves the other.
+    expect((await del(`/api/billers/${billerId}/rules/amount?label=past%20due%20balance`)).status).toBe(204);
+    expect(await amounts()).toEqual({ 1: null, 2: "90.00", 3: "194.26" });
+    expect((await del(`/api/billers/${billerId}/rules/amount?label=Past%20Due%20Balance`)).status).toBe(404);
+  });
+
+  it("tries the field's rules of that kind in the order saved, and is not offered where something else gives the field", async () => {
+    const billerId = await addWaterBiller();
+    await saveXcel();
+    await saveEmail(server.store, rawEmail({ subject: "Final notice", html: cells("Total Owed: $3100.00", "Past Due Balance: $3073.87") }), { uid: 4 });
+    await put(`/api/billers/${billerId}/rules/amount`, { label: "Total Owed", when: "missing" });
+    await put(`/api/billers/${billerId}/rules/amount`, { label: "Past Due Balance", when: "missing" });
+    // Both are in the final notice: the first saved gives it, so they never disagree; the other reminder has only the second.
+    const reminder = await json<CaptureDetailResponse>(await get("/api/captures/proton-bills/1700000000/4"));
+    expect(reminder.extraction.fields.find((f) => f.field === "amount")?.values.map((v) => [v.value, v.label])).toEqual([["3100.00", "Total Owed"]]);
+    expect((await amounts())[1]).toBe("3073.87");
+    // The statement's amount comes from the reader: only the "always" way is offered there.
+    const statement = await json<FieldChoicesResponse>(await get("/api/captures/proton-bills/1700000000/3/choices/amount"));
+    expect(statement.choices.every((c) => c.changesWhenMissing === null)).toBe(true);
+  });
+
+  it("keeps one rule per field and words, and one used always", async () => {
+    const billerId = await addWaterBiller();
+    await put(`/api/billers/${billerId}/rules/amount`, { label: "Past Due Balance", when: "missing" });
+    await put(`/api/billers/${billerId}/rules/amount`, { label: "Current Charges" });
+    // The same words again, used the other way: replaced, not added.
+    await put(`/api/billers/${billerId}/rules/amount`, { label: "past due balance" });
+    const { rules } = await json<BillerRulesResponse>(await get(`/api/billers/${billerId}/rules`));
+    expect(rules.map((r) => [r.label, r.when])).toEqual([["past due balance", "always"]]);
+    expect((await put(`/api/billers/${billerId}/rules/amount`, { label: "Total", when: "sometimes" })).status).toBe(400);
   });
 });

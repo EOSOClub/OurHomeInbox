@@ -173,6 +173,7 @@ const WATER: Biller = {
   senders: ["water.example"],
   notes: "",
   fetchInvoices: true,
+  remindersAreBills: false,
   autoSend: false,
   cleanChecks: 0,
   createdAt: "",

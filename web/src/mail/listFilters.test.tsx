@@ -101,6 +101,8 @@ function stubServer() {
     sender: checkSender(capture),
     invoice: null,
     extraction: extract(capture),
+    asBill: null,
+    asBillByBiller: false,
     tags: [],
     review: null,
     handoff: HANDOFF_WAITS,

@@ -26,6 +26,10 @@
 //   fail the check), else the oldest. An email already offered is never a
 //   repeat: OurHome has it.
 //
+//   A reminder used as the bill (asBill.ts, 2026-11-08) can come weeks after
+//   the bill it is about, so when either email is one, the days apart do not
+//   matter: the same biller, amount and due date is the same bill.
+//
 // Pure: no database, no files, so every rule is tested directly.
 
 import type { EmailKind } from "../shared/extraction.js";
@@ -103,6 +107,8 @@ export interface RepeatCandidate {
   checked: boolean;
   /** The mail provider confirmed its sender. */
   senderVerified: boolean;
+  /** A reminder used as the bill (a person's mark, or its biller's setting). Left out: false. */
+  reminder?: boolean;
 }
 
 /** Why a repeat is never sent. `biller` and `day` name the email used instead. */
@@ -129,6 +135,7 @@ export function sameAccount(a: string, b: string): boolean {
 function sameBill(a: RepeatCandidate, b: RepeatCandidate): boolean {
   if (a.invoiceNo !== null && b.invoiceNo !== null && a.invoiceNo !== b.invoiceNo) return false;
   if (a.accountNo !== null && b.accountNo !== null && !sameAccount(a.accountNo, b.accountNo)) return false;
+  if (a.reminder || b.reminder) return true;
   return Math.abs(Date.parse(`${a.emailDay}T00:00:00Z`) - Date.parse(`${b.emailDay}T00:00:00Z`)) <= REPEAT_DAYS * 86_400_000;
 }
 

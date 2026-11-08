@@ -272,6 +272,48 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE payment_pairings ADD COLUMN also_bill_ids text NOT NULL DEFAULT '[]';
   `,
+  // A reminder used as the bill (owner, 2026-11-07; see asBill.ts): a person
+  // said this reminder is the bill, because the bill's own email never came
+  // in or the biller sends its bills as reminders. Named by capture id, as
+  // tags are. No row means the reader's kind stands.
+  `
+  CREATE TABLE capture_as_bill (
+    household_id integer NOT NULL REFERENCES households(id),
+    capture_id text NOT NULL,
+    marked_by integer REFERENCES users(id) ON DELETE SET NULL,
+    marked_at text NOT NULL,
+    PRIMARY KEY (household_id, capture_id)
+  );
+  `,
+  // Its reminders are its bills (owner, 2026-11-08; see asBill.ts): a biller
+  // that sends its bills as reminders. While on, every reminder from it is
+  // used as the bill, as if each were marked. Off by default.
+  `
+  ALTER TABLE billers ADD COLUMN reminders_are_bills integer NOT NULL DEFAULT 0;
+  `,
+  // When a biller's rule is used (owner, 2026-11-08; see rules.ts): 'always'
+  // (ahead of the built-in reader, as every rule was until now; one per field)
+  // or 'missing' (only where nothing else gives the field; any number, tried
+  // in the order saved, so the id keeps that order). The table is made again
+  // because one field can now have several rules.
+  `
+  CREATE TABLE biller_rules_v2 (
+    id integer PRIMARY KEY,
+    biller_id integer NOT NULL REFERENCES billers(id) ON DELETE CASCADE,
+    household_id integer NOT NULL REFERENCES households(id),
+    field text NOT NULL,
+    label text NOT NULL,
+    use_when text NOT NULL DEFAULT 'always' CHECK (use_when IN ('always', 'missing')),
+    created_at text NOT NULL
+  );
+  INSERT INTO biller_rules_v2 (biller_id, household_id, field, label, use_when, created_at)
+    SELECT biller_id, household_id, field, label, 'always', created_at FROM biller_rules ORDER BY created_at, biller_id, field;
+  DROP TABLE biller_rules;
+  ALTER TABLE biller_rules_v2 RENAME TO biller_rules;
+  CREATE UNIQUE INDEX biller_rules_always ON biller_rules(biller_id, field) WHERE use_when = 'always';
+  CREATE UNIQUE INDEX biller_rules_label ON biller_rules(biller_id, field, label COLLATE NOCASE);
+  CREATE INDEX biller_rules_household ON biller_rules(household_id);
+  `,
 ];
 
 /** The schema version this code expects. */

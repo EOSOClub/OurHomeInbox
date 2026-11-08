@@ -9,7 +9,9 @@
 // Each email carries the household's biller for its sender (see matching.ts),
 // its tags (see tags.ts), a person's review mark (see reviews.ts), whether the mail provider confirmed that sender (see sender.ts), what
 // the reader picked out of it with that biller's rules (see
-// extraction.ts and rules.ts), which bill a payment pays and what pays a bill
+// extraction.ts and rules.ts; a reminder a person marked as the bill, or
+// any reminder of a biller whose reminders are its bills, is a bill, see
+// asBill.ts), which bill a payment pays and what pays a bill
 // (see payments/pairing.ts), whether it is a copy of an email captured from
 // another mailbox or a second email about a bill another email gives (see
 // copies.ts: neither is ever sent, and both are left out of pairing), and
@@ -27,13 +29,23 @@ import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Hono, type Context } from "hono";
 import { log } from "../log.js";
-import type { CaptureDetailResponse, CaptureListItem, CaptureListResponse, CaptureReview, FieldChoicesResponse, TagRef } from "../shared/api.js";
+import type {
+  AsBillMark,
+  BillerMatch,
+  CaptureDetailResponse,
+  CaptureListItem,
+  CaptureListResponse,
+  CaptureReview,
+  FieldChoicesResponse,
+  TagRef,
+} from "../shared/api.js";
 import type { Capture } from "../shared/capture.js";
 import type { HandoffDocument, HandoffInfo } from "../shared/handoff.js";
-import { FIELDS, type BillerRule, type FieldName } from "../shared/extraction.js";
+import { FIELDS, type BillerRule, type ExtractionSummary, type FieldName } from "../shared/extraction.js";
 import type { InvoiceInfo, InvoiceRecord } from "../shared/invoice.js";
-import type { OurHomeChangeKind, PaymentInfo, PaymentRef } from "../shared/payments.js";
+import type { OurHomeChangeKind, PartPaid, PaymentInfo, PaymentRef } from "../shared/payments.js";
 import type { CaptureStore } from "../store.js";
+import { asBillCause, asBillMarks, extractionAsBill, summaryAsBill, type AsBillCause } from "./asBill.js";
 import { listBillers } from "./billers.js";
 import type { CachedEmail, CaptureCache } from "./captureCache.js";
 import type { Database } from "./db.js";
@@ -114,8 +126,13 @@ class HouseholdReader {
   /** The household's mailboxes by slug: only their mail is shown. */
   readonly places: Map<string, MailboxPlace>;
   private readonly rules: Map<number, BillerRule[]>;
+  /** The billers whose reminders are their bills (asBill.ts). */
+  private readonly remindersAreBills: Set<number>;
+  /** The reminders this read uses as bills, by capture id: copies.ts counts each once with a bill of the same amount and due date. */
+  private readonly reminderBills = new Set<string>();
   private tags: Map<string, TagRef[]> | null = null;
   private reviews: Map<string, CaptureReview> | null = null;
+  private asBill: Map<string, AsBillMark> | null = null;
   private handoff: HandoffRecords | null = null;
 
   constructor(
@@ -123,7 +140,9 @@ class HouseholdReader {
     mailboxes: Mailboxes,
     private readonly householdId: number,
   ) {
-    this.matcher = new BillerMatcher(listBillers(db, householdId));
+    const billers = listBillers(db, householdId);
+    this.matcher = new BillerMatcher(billers);
+    this.remindersAreBills = new Set(billers.filter((b) => b.remindersAreBills).map((b) => b.id));
     this.places = mailboxes.places(householdId);
     this.rules = householdRules(db, householdId);
   }
@@ -202,6 +221,7 @@ class HouseholdReader {
           offered: offers.get(base.id)?.number ?? null,
           checked: base.review?.state === "checked",
           senderVerified: base.senderVerified === true,
+          reminder: this.reminderBills.has(base.id),
         })),
     );
     const originals = [...seen.values()].filter((email) => !copyOf.has(email.id) && !repeatOf.has(email.id));
@@ -275,6 +295,19 @@ class HouseholdReader {
     this.reviews ??= captureReviews(this.db, this.householdId);
     return this.reviews.get(captureId) ?? null;
   }
+
+  /** Why this email, if the reader takes it for a reminder, is used as the bill: its biller's setting, or a person's mark; null for neither (asBill.ts). */
+  asBillCauseOf(biller: BillerMatch | null, captureId: string): AsBillCause | null {
+    this.asBill ??= asBillMarks(this.db, this.householdId);
+    return asBillCause(biller ? { name: biller.name, remindersAreBills: this.remindersAreBills.has(biller.id) } : null, this.asBill.get(captureId) ?? null);
+  }
+
+  /** The summary as the household sees it: a reminder used as the bill is a bill, and is noted as one. */
+  shownSummary(captureId: string, biller: BillerMatch | null, picked: ExtractionSummary): ExtractionSummary {
+    const shown = summaryAsBill(picked, this.asBillCauseOf(biller, captureId));
+    if (shown !== picked) this.reminderBills.add(captureId);
+    return shown;
+  }
 }
 
 /** A payment's pairing as the hand-off needs it: the bill's reference, and whether the bill goes. */
@@ -326,6 +359,13 @@ function paymentInfo(
   reported: ReadonlyMap<string, { change: OurHomeChangeKind; at: string }>,
   ref: (paymentId: string) => PaymentRef,
 ): PaymentInfo | null {
+  /** A paired bill paid only in part, after all its payments (owner, 2026-11-07); null when paid in full or not paired. */
+  const part = (billId: string): PartPaid | null => {
+    const left = pairing.leftCents.get(billId);
+    const cents = seen.get(billId)?.amountCents ?? null;
+    if (left === undefined || left <= 0 || cents === null) return null;
+    return { billId, paid: (cents - left) / 100, owed: left / 100 };
+  };
   if (paired) {
     const shown = (id: string) => {
       const bill = byId.get(id)?.base;
@@ -333,10 +373,13 @@ function paymentInfo(
       const cents = seen.get(bill.id)?.amountCents ?? null;
       return { id: bill.id, date: shownDate(bill), amount: cents === null ? null : cents / 100 };
     };
+    // Only its last bill can be short: the payment is shared out oldest first.
+    const last = paired.how === "own" || paired.needsBill ? null : (paired.also[paired.also.length - 1]?.billId ?? paired.billId);
     return {
       role: "payment",
       bill: paired.billId === null ? null : shown(paired.billId),
       alsoBills: paired.also.flatMap((also) => shown(also.billId) ?? []),
+      part: last === null ? null : part(last),
       how: paired.how,
       paidLate: paired.paidLate,
       needsBill: paired.needsBill,
@@ -348,15 +391,25 @@ function paymentInfo(
     };
   }
   if (base.picked.kind !== "bill" || base.review?.state === "not-bill") return null;
-  const payer = pairing.paidBy.get(base.id);
-  const payment = payer === undefined ? undefined : byId.get(payer)?.base;
-  return { role: "bill", paidBy: payment ? { id: payment.id, date: shownDate(payment) } : null, ourhome: reported.get(base.id) ?? null };
+  const payers = (pairing.payers.get(base.id) ?? []).flatMap((id) => {
+    const payment = byId.get(id)?.base;
+    return payment ? [{ id: payment.id, date: shownDate(payment) }] : [];
+  });
+  return {
+    role: "bill",
+    paidBy: payers[0] ?? null,
+    alsoPaidBy: payers.slice(1),
+    part: payers.length > 0 ? part(base.id) : null,
+    ourhome: reported.get(base.id) ?? null,
+  };
 }
 
 /** An email as the list shows it, from what its files gave (kept in the cache) and the household's billers, rules, tags and marks. */
 async function baseItem(email: CachedEmail, reader: HouseholdReader, cache: CaptureCache): Promise<BaseItem> {
   const { id, slug, mailbox, uidValidity, uid } = email;
   const biller = reader.matcher.match(email.from);
+  // The whole email is read again only when this summary is not known yet (a new rule, say).
+  const picked = await cache.summaries.get(email, reader.rulesFor(biller?.id), () => readCapture(email.dir));
   return {
     id,
     mailbox: mailbox.name,
@@ -374,8 +427,8 @@ async function baseItem(email: CachedEmail, reader: HouseholdReader, cache: Capt
     hasHtml: email.hasHtml,
     biller,
     senderVerified: email.senderVerified,
-    // The whole email is read again only when this summary is not known yet (a new rule, say).
-    picked: await cache.summaries.get(email, reader.rulesFor(biller?.id), () => readCapture(email.dir)),
+    // A reminder used as the bill (a person's mark, or its biller's setting) is a bill from here on: pairing and the hand-off see it so.
+    picked: reader.shownSummary(id, biller, picked),
     tags: reader.tagsOn(id),
     review: reader.reviewOn(id),
   };
@@ -528,6 +581,10 @@ export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
       const base = await baseItem(email, reader, deps.cache);
       item = reader.finish([{ base, messageId: email.messageId, dateHeader: email.dateHeader }], isoDay((deps.now?.() ?? new Date()).toISOString()))[0]!.item;
     }
+    const { extraction, asBill, asBillByBiller } = extractionAsBill(
+      extract(found.capture, reader.rulesFor(biller?.id), found.invoice?.text ?? null),
+      reader.asBillCauseOf(biller, id),
+    );
     const body: CaptureDetailResponse = {
       id,
       mailboxSlug: found.slug,
@@ -535,7 +592,9 @@ export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
       biller,
       sender: checkSender(found.capture),
       invoice: invoiceInfo(found.invoice),
-      extraction: extract(found.capture, reader.rulesFor(biller?.id), found.invoice?.text ?? null),
+      extraction,
+      asBill,
+      asBillByBiller,
       tags: item.tags,
       review: item.review,
       handoff: item.handoff,
@@ -573,7 +632,10 @@ export function captureRoutes(deps: CaptureDeps): Hono<AppEnv> {
     const body: FieldChoicesResponse = {
       field: field as FieldName,
       biller,
-      rule: rules.find((rule) => rule.field === field) ?? null,
+      rules: [
+        ...rules.filter((rule) => rule.field === field && rule.when !== "missing"),
+        ...rules.filter((rule) => rule.field === field && rule.when === "missing"),
+      ],
       otherEmails: others.length,
       choices: choicesFor(new PreparedEmail(found.capture, found.invoice?.text ?? null), field as FieldName, rules, others),
     };

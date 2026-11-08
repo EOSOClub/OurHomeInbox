@@ -8,6 +8,7 @@ import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashPassword } from "../../src/server/auth.js";
+import { testAnswer } from "../../src/server/mailboxes.js";
 import type { ApiError, CaptureListResponse, MailboxInfo, MailboxListResponse, MailboxTestResponse } from "../../src/shared/api.js";
 import { BRIDGE_PASSWORD, call, json, makeServer, rawEmail, saveEmail, sessionCookie, setUp, type TestServer } from "./helpers.js";
 
@@ -528,6 +529,28 @@ describe("trying settings, and reading mail", () => {
     const res = await send("POST", "/api/mailboxes/test", { ...WATER, host: "127.0.0.1", port });
     expect(res.status).toBe(200);
     expect(await json<MailboxTestResponse>(res)).toEqual({ ok: false, message: `127.0.0.1:${port} refused the connection. Check the port.`, folders: [] });
+  });
+
+  it("tries a connection with no folders chosen yet, to load them", async () => {
+    const port = await closedPort();
+    const res = await send("POST", "/api/mailboxes/test", { ...WATER, host: "127.0.0.1", port, folders: [] });
+    expect(res.status).toBe(200);
+    expect((await json<MailboxTestResponse>(res)).message).toBe(`127.0.0.1:${port} refused the connection. Check the port.`);
+    // Saving one still needs a folder to read.
+    expect((await send("POST", "/api/mailboxes", { ...WATER, folders: [] })).status).toBe(400);
+  });
+
+  it("says how many folders there are to choose from when none is chosen yet", () => {
+    expect(testAnswer({ folders: ["INBOX", "Labels/Bill"], checked: [] })).toEqual({
+      ok: true,
+      message: "Signed in. Found 2 folders: choose the ones to read.",
+      folders: ["INBOX", "Labels/Bill"],
+    });
+    expect(testAnswer({ folders: [], checked: [] }).message).toBe("Signed in. No folders were found in this mailbox.");
+    expect(testAnswer({ folders: ["INBOX", "Labels/Skip"], checked: [{ folder: "Labels/Skip", messages: 3, leftOut: true }] }).message).toBe(
+      'Signed in. The folder "Labels/Skip" (left out) has 3 messages. Found 2 folders: choose the ones to read.',
+    );
+    expect(testAnswer({ folders: ["INBOX"], checked: [{ folder: "INBOX", messages: 1 }] }).message).toBe('Signed in. The folder "INBOX" has 1 message.');
   });
 
   it("tries a saved mailbox with its saved password when none is typed", async () => {

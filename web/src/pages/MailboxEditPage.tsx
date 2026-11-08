@@ -318,7 +318,7 @@ function MailboxFormCard({
               <PlugZap aria-hidden className="size-4" />
               Test connection
             </Button>
-            <p className="mt-1 text-sm text-muted">Signs in and opens each folder without changing anything. Nothing is saved.</p>
+            <p className="mt-1 text-sm text-muted">Signs in, loads this mailbox's folders to choose from and opens each one chosen, without changing anything. Nothing is saved.</p>
           </div>
           {test.isError ? (
             <Notice tone="error" live>

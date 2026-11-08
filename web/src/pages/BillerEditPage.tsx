@@ -57,6 +57,7 @@ function BillerFormCard({
   const [form, setForm] = useState<BillerForm>(initial);
   const [errors, setErrors] = useState<BillerFormErrors>({});
   const invoiceHintId = useId();
+  const remindersHintId = useId();
 
   const text = (key: "name" | "senders" | "notes") => ({
     value: form[key],
@@ -104,6 +105,23 @@ function BillerFormCard({
             <span id={invoiceHintId} className="block text-sm text-muted">
               When an email from this biller has a link like "View Invoice" and Proton confirmed who sent it, OurHomeInbox opens the
               link once and keeps the invoice with the email. Turn this off if the link asks for your password.
+            </span>
+          </span>
+        </label>
+        <label className="flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            checked={form.remindersAreBills}
+            onChange={(e) => setForm((f) => ({ ...f, remindersAreBills: e.target.checked }))}
+            aria-describedby={remindersHintId}
+            className="mt-1 size-4 accent-accent"
+          />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">Its reminders are its bills</span>
+            <span id={remindersHintId} className="block text-sm text-muted">
+              Turn this on only if this biller sends its bills as reminders and no separate bill email. Each reminder from it is then
+              used as the bill and goes to OurHome like any bill. A reminder with the same amount and due date as a bill already in is
+              still counted once.
             </span>
           </span>
         </label>
@@ -197,7 +215,7 @@ function BillerRules({ biller }: { biller: Biller }) {
   const queryClient = useQueryClient();
   const rules = useBillerRules(biller.id);
   const remove = useMutation({
-    mutationFn: (field: FieldName) => api.deleteBillerRule(biller.id, field),
+    mutationFn: (rule: { field: FieldName; label: string }) => api.deleteBillerRule(biller.id, rule.field, rule.label),
     onSuccess: () => refreshAfterRuleChange(queryClient, biller.id),
   });
 
@@ -221,18 +239,21 @@ function BillerRules({ biller }: { biller: Biller }) {
       {rules.data && rules.data.rules.length > 0 ? (
         <dl className="mt-3 divide-y divide-line">
           {rules.data.rules.map((rule) => (
-            <DetailRow key={rule.field} label={FIELD_LABELS[rule.field]}>
+            <DetailRow key={`${rule.field}|${rule.label}`} label={FIELD_LABELS[rule.field]}>
               <span className="block font-medium wrap-anywhere">The value after "{rule.label}"</span>
+              {rule.when === "missing" ? (
+                <span className="block text-sm text-muted">Only in emails where no {FIELD_LABELS[rule.field].toLowerCase()} is found otherwise</span>
+              ) : null}
               <span className="block text-sm text-muted">
                 Used in {rule.usedOn} of {plural(rules.data.emails, "email", "emails")}
               </span>
               <Button
                 variant="secondary"
                 className="mt-2 px-3 py-1"
-                aria-label={`Remove the rule for the ${FIELD_LABELS[rule.field].toLowerCase()}`}
-                busy={remove.isPending && remove.variables === rule.field}
+                aria-label={`Remove the rule for the ${FIELD_LABELS[rule.field].toLowerCase()} after "${rule.label}"`}
+                busy={remove.isPending && remove.variables.field === rule.field && remove.variables.label === rule.label}
                 disabled={remove.isPending}
-                onClick={() => remove.mutate(rule.field)}
+                onClick={() => remove.mutate({ field: rule.field, label: rule.label })}
               >
                 Remove
               </Button>
@@ -257,7 +278,14 @@ function EditBiller({ biller, addSender }: { biller: Biller; addSender: string |
   });
   // Computed once, so the form keeps what was typed while it is open.
   const [{ text, added }] = useState(() => sendersWith(biller.senders, addSender));
-  const initial: BillerForm = { name: biller.name, kind: biller.kind, senders: text, notes: biller.notes, fetchInvoices: biller.fetchInvoices };
+  const initial: BillerForm = {
+    name: biller.name,
+    kind: biller.kind,
+    senders: text,
+    notes: biller.notes,
+    fetchInvoices: biller.fetchInvoices,
+    remindersAreBills: biller.remindersAreBills,
+  };
 
   return (
     <div className="flex flex-col gap-5">

@@ -64,6 +64,15 @@ describe("findRepeatBills", () => {
     expect(apart({ emailDay: "2026-08-20", emailTime: "2026-08-20T12:00:00.000Z" })).toBe(1);
   });
 
+  it("counts a reminder used as the bill once with its bill, however many days apart (2026-11-08)", () => {
+    const late = { emailDay: "2026-08-30", emailTime: "2026-08-30T12:00:00.000Z", reminder: true };
+    expect([...findRepeatBills([cityBill("bill", "2026-08-13"), cityBill("reminder", "2026-08-30", late)])]).toEqual([["reminder", "bill"]]);
+    // Either way round, and only for the same bill: another amount, or numbers that differ, keep them apart.
+    expect(findRepeatBills([cityBill("bill", "2026-08-13", { reminder: true }), cityBill("other", "2026-08-30", { emailDay: "2026-08-30" })]).size).toBe(1);
+    expect(findRepeatBills([cityBill("bill", "2026-08-13"), cityBill("reminder", "2026-08-30", { ...late, amountCents: 5000 })]).size).toBe(0);
+    expect(findRepeatBills([cityBill("bill", "2026-08-13", { invoiceNo: "1" }), cityBill("reminder", "2026-08-30", { ...late, invoiceNo: "2" })]).size).toBe(0);
+  });
+
   it("needs a bill with an amount and a due date, not marked Not a bill", () => {
     const apart = (more: Partial<RepeatCandidate>) => findRepeatBills([cityBill("a", "2026-08-13", more), cityBill("b", "2026-08-14", more)]).size;
     expect(apart({ kind: "receipt" })).toBe(0);

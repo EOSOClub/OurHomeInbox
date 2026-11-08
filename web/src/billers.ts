@@ -30,11 +30,12 @@ export interface BillerForm {
   senders: string;
   notes: string;
   fetchInvoices: boolean;
+  remindersAreBills: boolean;
 }
 
 export type BillerFormErrors = Partial<Record<keyof BillerForm, string>>;
 
-export const EMPTY_BILLER_FORM: BillerForm = { name: "", kind: null, senders: "", notes: "", fetchInvoices: true };
+export const EMPTY_BILLER_FORM: BillerForm = { name: "", kind: null, senders: "", notes: "", fetchInvoices: true, remindersAreBills: false };
 
 /** The form's problems, or the request to send when there are none. */
 export function checkBillerForm(form: BillerForm): { errors: BillerFormErrors; input: BillerInput | null } {
@@ -58,7 +59,10 @@ export function checkBillerForm(form: BillerForm): { errors: BillerFormErrors; i
   if (notes.length > MAX_BILLER_NOTES) errors.notes = `Keep the notes under ${MAX_BILLER_NOTES} characters.`;
 
   if (Object.keys(errors).length > 0 || form.kind === null) return { errors, input: null };
-  return { errors, input: { name, kind: form.kind, senders, notes, fetchInvoices: form.fetchInvoices } };
+  return {
+    errors,
+    input: { name, kind: form.kind, senders, notes, fetchInvoices: form.fetchInvoices, remindersAreBills: form.remindersAreBills },
+  };
 }
 
 /**

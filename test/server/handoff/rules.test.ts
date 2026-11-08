@@ -10,6 +10,7 @@ import {
   isoDay,
   maybeDuplicateReason,
   PAIRING_REASONS,
+  REMINDER_REASON,
   type HandoffInput,
   type PaymentHandoff,
 } from "../../../src/server/handoff/rules.js";
@@ -58,7 +59,7 @@ const decide = (it: Item, more: Partial<HandoffInput> = {}) => handoffDecision(i
 
 describe("handoffDecision", () => {
   it("never sends reminders, statements, Not a bill, or emails from before the start date", () => {
-    expect(decide(item({}, { kind: "reminder" }))).toEqual({ state: "never", reason: "Reminders are not sent: OurHome gets the bill itself." });
+    expect(decide(item({}, { kind: "reminder" }))).toEqual({ state: "never", reason: REMINDER_REASON });
     expect(decide(item({}, { kind: "statement" }))).toEqual({ state: "never", reason: "Statements are not sent: there is nothing to pay." });
     expect(decide(item({ review: { state: "not-bill", by: "Sam", at: "x" } }))).toEqual({ state: "never", reason: "Marked Not a bill." });
     expect(decide(item({ review: checked }), { startDate: "2026-10-21" })).toMatchObject({ state: "never", reason: expect.stringContaining("before the OurHome connection's start date") });

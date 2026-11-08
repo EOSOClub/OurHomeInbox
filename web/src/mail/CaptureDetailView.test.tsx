@@ -54,7 +54,7 @@ function makeCapture(overrides: Partial<Capture> = {}): Capture {
 
 function detail(capture: Capture, biller: BillerMatch | null = null, tags: CaptureDetailResponse["tags"] = []): CaptureDetailResponse {
   // The server's own reader, so the picks match what the API would send.
-  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller, sender: checkSender(capture), invoice: null, extraction: extract(capture), tags, review: null, handoff: HANDOFF_WAITS, payment: null };
+  return { id: "proton-bills/123/45", mailboxSlug: "proton-bills", capture, biller, sender: checkSender(capture), invoice: null, extraction: extract(capture), asBill: null, asBillByBiller: false, tags, review: null, handoff: HANDOFF_WAITS, payment: null };
 }
 
 function openTab(name: string) {
@@ -154,6 +154,52 @@ describe("CaptureDetailView", () => {
     expect(picked.textContent).toContain("A reminder of a bill already sent.");
     expect(picked.textContent).toContain("This is a credit: nothing is owed.");
     expect(picked.textContent).toContain("This email gives more than one due date: Nov 4, 2026 and Nov 5, 2026.");
+    // Without the page's button, the note does not offer to use it as the bill.
+    expect(picked.textContent).not.toContain("use this reminder as the bill");
+  });
+
+  it("offers to use a reminder as the bill when the page adds the button", () => {
+    const html = "<p>Second Notice</p><p>Amount Due: $63.34</p>";
+    render(<CaptureDetailView detail={detail(makeCapture({ html, text: null }))} asBillAction={<button type="button">Use as the bill</button>} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    expect(picked.textContent).toContain("If the bill's own email never came in, or this biller sends its bills as reminders, use this reminder as the bill.");
+    expect(within(picked).getByRole("button", { name: "Use as the bill" })).toBeTruthy();
+  });
+
+  it("says who used a reminder as the bill, and shows it as a bill", () => {
+    const html = "<p>Second Notice</p><p>Amount Due: $63.34</p><p>Due Date: 11/20/2026</p>";
+    const base = detail(makeCapture({ html, text: null }));
+    const mark = { by: "Sam Smith", at: "2026-11-07T15:00:00Z" };
+    // As the server sends it: the kind is a bill, and the reason keeps why the reader took it for a reminder.
+    const view: CaptureDetailResponse = {
+      ...base,
+      asBill: mark,
+      extraction: {
+        ...base.extraction,
+        kind: "bill",
+        kindReason: 'Marked as the bill by Sam Smith. On its own, OurHomeInbox took it for a reminder. The email says "Second Notice".',
+      },
+    };
+    render(<CaptureDetailView detail={view} asBillAction={<button type="button">It is only a reminder</button>} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    expect(picked.textContent).toContain("Marked as the bill by Sam Smith.");
+    expect(picked.textContent).toContain("Used as the bill. Marked by Sam Smith,");
+    expect(picked.textContent).not.toContain("A reminder of a bill already sent.");
+    // Its badge says Bill, next to the heading.
+    expect(within(picked).getByRole("heading", { name: "Picked out" }).nextElementSibling?.textContent).toBe("Bill");
+    expect(within(picked).getByRole("button", { name: "It is only a reminder" })).toBeTruthy();
+  });
+
+  it("says a reminder is the bill because its biller sends its bills as reminders", () => {
+    const html = "<p>Second Notice</p><p>Amount Due: $63.34</p>";
+    const base = detail(makeCapture({ html, text: null }), { id: 3, name: "City Water", kind: "bill", matchedOn: "water.example" });
+    const view: CaptureDetailResponse = { ...base, asBillByBiller: true, extraction: { ...base.extraction, kind: "bill" } };
+    render(<CaptureDetailView detail={view} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    expect(picked.textContent).toContain("Used as the bill: City Water sends its bills as reminders (set on the biller's page).");
+    expect(picked.textContent).not.toContain("A reminder of a bill already sent.");
+    expect(picked.textContent).not.toContain("Marked by");
+    expect(within(picked).getByRole("heading", { name: "Picked out" }).nextElementSibling?.textContent).toBe("Bill");
   });
 
   it("shows the invoice its link gave, with the values picked from it marked there and not in the email", () => {

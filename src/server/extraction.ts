@@ -2,7 +2,8 @@
 // email by the labels billers put beside them ("Amount Due: $114.93", or
 // "Amount Billed:" in one table cell and "$4.13" in the next), and decides
 // whether the email is a bill, a reminder, a receipt or a statement. A
-// biller's rules (saved with Fix) add labels of its own, tried first; Fix
+// biller's rules (saved with Fix) add labels of its own, tried first, or,
+// for a rule used only where nothing else gives the field, tried last; Fix
 // itself is choicesFor, at the end.
 //
 // The email's text is only ever matched against these patterns. Nothing in
@@ -26,6 +27,7 @@ import {
   type PickedValue,
   type PickSpot,
   type PiecePlace,
+  type RuleWhen,
 } from "../shared/extraction.js";
 import { readText, readTree, type Reading, type ReadingTree } from "../shared/reading.js";
 
@@ -215,9 +217,24 @@ function labelPattern(field: FieldName, label: string, rank: number, byRule: boo
 
 const PATTERNS: LabelPattern[] = FIELDS.flatMap((field) => LABELS[field].map((label, rank) => labelPattern(field, label, rank, false)));
 
-/** A biller's rules as label patterns, more trusted than any built-in label. */
-function rulePatterns(rules: readonly BillerRule[]): LabelPattern[] {
-  return rules.map((rule) => labelPattern(rule.field, rule.label, -1, true));
+/**
+ * A biller's rules as label patterns: `first`, the rules used always, more
+ * trusted than any built-in label; `fallback`, the rules used only for a
+ * field nothing else gives (RuleWhen "missing").
+ */
+interface RulePatterns {
+  first: LabelPattern[];
+  fallback: LabelPattern[];
+}
+
+function rulePatterns(rules: readonly BillerRule[]): RulePatterns {
+  return {
+    first: rules.filter((rule) => rule.when !== "missing").map((rule) => labelPattern(rule.field, rule.label, -1, true)),
+    // In the order saved, each more trusted than the next, so the first one found gives the field (and two never disagree).
+    fallback: rules
+      .filter((rule) => rule.when === "missing")
+      .map((rule, order) => labelPattern(rule.field, rule.label, -1_000_000 + order, true)),
+  };
 }
 
 /** One label found with a value after it. */
@@ -455,26 +472,53 @@ function merge(email: PickedField[], invoice: PickedField[]): PickedField[] {
   });
 }
 
-/** Prefers the HTML body; uses the plain text when the HTML gives nothing. Then adds the invoice's. */
-function finishWith(email: PreparedEmail, rules: readonly LabelPattern[]): Extraction {
+/**
+ * The fields the fallback rules give where nothing else gave them: from the
+ * email's body first, then its invoice. Built-in labels are looked at with
+ * them only so a rule's words inside a longer label are not taken.
+ */
+function fillMissing(fields: PickedField[], bodies: ReadonlyArray<ReadBody | null>, fallback: readonly LabelPattern[]): PickedField[] {
+  let filled = fields;
+  for (const body of bodies) {
+    const missing = fallback.filter((pattern) => !filled.some((f) => f.field === pattern.field));
+    if (!body || missing.length === 0) continue;
+    const from = body.source === "invoice" ? "invoice" : "email";
+    const found = pickFields([...body.builtIn, ...findMatches(body.pieces, missing, body.below)], from).filter(
+      (f) => f.by === "rule" && missing.some((pattern) => pattern.field === f.field),
+    );
+    if (found.length > 0) filled = FIELDS.flatMap((field) => [...filled, ...found].filter((f) => f.field === field));
+  }
+  return filled;
+}
+
+/**
+ * Prefers the HTML body; uses the plain text when the HTML gives nothing. Then
+ * adds the invoice's, and last what the fallback rules give for fields still
+ * missing.
+ */
+function finishWith(email: PreparedEmail, rules: RulePatterns): Extraction {
   let source: Extraction["source"] = null;
   let pieces: string[] = [];
   let fields: PickedField[] = [];
+  let body: ReadBody | null = null;
   if (email.html) {
     source = "html";
     pieces = email.html.pieces;
-    fields = pick(email.html, rules);
+    fields = pick(email.html, rules.first);
+    body = email.html;
   }
   const text = fields.length === 0 ? email.textReading() : null;
   if (text) {
-    const textFields = pick(text, rules);
+    const textFields = pick(text, rules.first);
     if (source === null || textFields.length > 0) {
       source = "text";
       pieces = text.pieces;
       fields = textFields;
+      body = text;
     }
   }
-  if (email.invoice) fields = merge(fields, pick(email.invoice, rules));
+  if (email.invoice) fields = merge(fields, pick(email.invoice, rules.first));
+  if (rules.fallback.length > 0) fields = fillMissing(fields, [body, email.invoice], rules.fallback);
   const { kind, reason } = decideKind(email.subject, pieces, fields);
   const invoice = email.invoice ? { pieces: email.invoice.pieces, places: email.invoice.places } : null;
   const dueNow = findPastDue(pieces, "email") ?? (email.invoice ? findPastDue(email.invoice.pieces, "invoice") : null);
@@ -598,7 +642,9 @@ function sameValues(a: readonly PickedValue[], b: readonly PickedValue[]): boole
  * Every value Fix can offer for `field` in this email: each value of the
  * right kind with a label before it, where a rule on that label really does
  * pick it. With each, how many of the biller's `others` emails the rule would
- * change. `rules` are the biller's rules now; the field's own is replaced.
+ * change. `rules` are the biller's rules now; each choice is tried with them
+ * as saving it would leave them (see savedWith), always and, where nothing
+ * else gives the field here, only where nothing else does.
  */
 export function choicesFor(
   email: PreparedEmail,
@@ -612,22 +658,38 @@ export function choicesFor(
   const pickedField = now.fields.find((f) => f.field === field);
   const picked = pickedField?.values ?? [];
   const pickedLabel = picked[0]?.label.toLowerCase();
-  const kept = rules.filter((rule) => rule.field !== field);
   const othersNow = others.map((other) => valuesOf(finish(other, rules), field));
+  // The biller's rules with one on `label` saved `when`, as saving it would leave them (see rules.ts):
+  // a rule on the same words is replaced, and an "always" one replaces the field's "always" one.
+  const savedWith = (label: string, when: RuleWhen): BillerRule[] => [
+    ...rules.filter(
+      (rule) => rule.field !== field || (rule.label.toLowerCase() !== label.toLowerCase() && !(when === "always" && rule.when !== "missing")),
+    ),
+    { field, label, when },
+  ];
+  // Nothing but a "missing" rule gives the field here: a new one, tried after those, may then give it.
+  const missingHere = valuesOf(finish(email, rules.filter((rule) => rule.field !== field || rule.when !== "missing")), field).length === 0;
+  const changed = (patterns: RulePatterns) =>
+    others.filter((other, i) => !sameValues(valuesOf(finishWith(other, patterns), field), othersNow[i]!)).length;
 
   // What a rule on each label gives, worked out once per label.
-  const tried = new Map<string, { values: PickedValue[]; from: PickedField["from"]; changes: number } | null>();
+  const tried = new Map<string, { values: PickedValue[]; from: PickedField["from"]; changes: number; changesWhenMissing: number | null } | null>();
   const tryLabel = (label: string) => {
     const key = label.toLowerCase();
     if (!tried.has(key)) {
       if (tried.size >= MAX_LABELS_TRIED) return null;
-      const patterns = rulePatterns([...kept, { field, label }]);
+      const patterns = rulePatterns(savedWith(label, "always"));
       const result = finishWith(email, patterns);
       const found = result.fields.find((f) => f.field === field);
       // A rule that would make the reader switch bodies is not offered: its marks would point elsewhere.
       const values = result.source === now.source ? (found?.values ?? []) : [];
-      const changes = others.filter((other, i) => !sameValues(valuesOf(finishWith(other, patterns), field), othersNow[i]!)).length;
-      tried.set(key, values.length && found ? { values, from: found.from, changes } : null);
+      let changesWhenMissing: number | null = null;
+      if (missingHere && values.length > 0) {
+        const fallback = rulePatterns(savedWith(label, "missing"));
+        const there = finishWith(email, fallback);
+        if (there.source === now.source && sameValues(valuesOf(there, field), values)) changesWhenMissing = changed(fallback);
+      }
+      tried.set(key, values.length && found ? { values, from: found.from, changes: changed(patterns), changesWhenMissing } : null);
     }
     return tried.get(key) ?? null;
   };
@@ -648,6 +710,7 @@ export function choicesFor(
         current: sameValues(result.values, picked) && candidate.label.toLowerCase() === pickedLabel && from === pickedField?.from,
         valuesHere: result.values.length,
         changes: result.changes,
+        changesWhenMissing: result.changesWhenMissing,
       });
     }
   }

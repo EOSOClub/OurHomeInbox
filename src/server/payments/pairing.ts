@@ -38,7 +38,16 @@
 //   Locked pairings are applied first and never change. A person's choice is
 //   kept only while its bill can still be paid (a bill, not Not a bill, a
 //   settled amount that is not a credit, not reported paid or removed) and no
-//   locked pairing has taken it; otherwise the payment needs a bill again.
+//   locked pairing or earlier choice has paid it in full; otherwise the
+//   payment needs a bill again.
+//   Part payments (owner, 2026-11-07: an Xcel Energy bill paid as 90.00, then
+//   60.00): a person can pick a bill that other payments pay only in part. The
+//   payments on one bill are applied in the order they were chosen, each to
+//   what is still owed after the ones before it (so the fee is what the
+//   payment that finishes it pays over the rest). What is still owed after all
+//   of them is kept for each bill (`leftCents`): the pages say "Partly paid"
+//   while it is more than 0. The automatic pairing never adds a payment to a
+//   bill that any payment pays.
 //   Days are the sender's own days (the offset in the email's Date header),
 //   as paid dates are printed; UTC days only when the header gives no offset.
 //
@@ -153,8 +162,12 @@ export interface PaymentPairing {
 export interface PairingResult {
   /** Every payment, by id. */
   payments: Map<string, PaymentPairing>;
-  /** The payment that pays each paired bill, by bill id. */
+  /** The payment that pays each paired bill, by bill id: the first one, when part payments pay it (all of them in `payers`). */
   paidBy: Map<string, string>;
+  /** Every payment that pays each paired bill, by bill id, in the order they were applied: more than one only for part payments a person chose. */
+  payers: Map<string, string[]>;
+  /** What is still owed on each paired bill after all its payments, in cents, by bill id: 0 once paid in full (or when its amount is not known). */
+  leftCents: Map<string, number>;
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -314,34 +327,44 @@ export function pairPayments(input: PairingInput): PairingResult {
   const { emails, fixed, reported, startDate, today } = input;
   const byId = new Map(emails.map((email) => [email.id, email]));
   const payments = emails.filter(isPayment);
-  const result: PairingResult = { payments: new Map(), paidBy: new Map() };
+  const result: PairingResult = { payments: new Map(), paidBy: new Map(), payers: new Map(), leftCents: new Map() };
+
+  /** What is still owed on a bill before this payment: its amount, less what payments applied before it pay (part payments). */
+  const owed = (bill: PairingEmail) => result.leftCents.get(bill.id) ?? bill.amountCents ?? 0;
 
   /**
    * Records what a payment pays: `bills` (none for Paid on its own or while it
    * needs a bill), oldest first. The oldest is its bill; the others are what
    * it also pays (contract v3). The fee is the one the payment email states;
    * when it states none, the payment less all the bills when more. It belongs
-   * to the oldest; each bill gets its amount, oldest first, and the last
-   * whatever is left (a person's part payment, or an overpayment the biller
-   * carries as a credit: it stays on this bill, never a fee and never the next
-   * bill's, owner 2026-11-05).
+   * to the oldest; each bill gets what is still owed on it, oldest first, and
+   * the last whatever is left (a person's part payment, or an overpayment the
+   * biller carries as a credit: it stays on this bill, never a fee and never
+   * the next bill's, owner 2026-11-05). What is still owed is the bill's
+   * amount, less what part payments applied before this one pay.
    */
   const settle = (payment: PairingEmail, bills: readonly PairingEmail[], how: PairingHow | null, locked: boolean, billMissing = false, staleChoice = false) => {
     const pay = payment.amountCents!;
     const ordered = [...bills].sort(byAge);
     const day = paymentDay(payment);
-    const total = ordered.reduce((sum, bill) => sum + (bill.amountCents ?? 0), 0);
+    const owing = ordered.map(owed);
+    const total = owing.reduce((sum, cents) => sum + cents, 0);
     // A bill whose amount is not known (on a locked pairing) leaves a fee the email does not state unknown: 0, as before.
     const known = ordered.every((bill) => bill.amountCents !== null);
     const feeCents =
       ordered.length === 0 ? 0 : payment.feeCents !== null ? Math.min(payment.feeCents, pay) : known && pay > total ? pay - total : 0;
     let left = pay - feeCents;
-    const shares = ordered.map((bill, i) => {
-      const share = i === ordered.length - 1 ? left : Math.min(Math.max(bill.amountCents ?? 0, 0), left);
+    const shares = ordered.map((_bill, i) => {
+      const share = i === ordered.length - 1 ? left : Math.min(Math.max(owing[i]!, 0), left);
       left -= share;
       return share;
     });
-    for (const bill of ordered) result.paidBy.set(bill.id, payment.id);
+    ordered.forEach((bill, i) => {
+      if (!result.paidBy.has(bill.id)) result.paidBy.set(bill.id, payment.id);
+      result.payers.set(bill.id, [...(result.payers.get(bill.id) ?? []), payment.id]);
+      // An amount not known counts as paid in full, as before: nobody else can pick it.
+      result.leftCents.set(bill.id, bill.amountCents === null ? 0 : Math.max(owing[i]! - shares[i]!, 0));
+    });
     const main = ordered[0];
     result.payments.set(payment.id, {
       paymentId: payment.id,
@@ -362,35 +385,50 @@ export function pairPayments(input: PairingInput): PairingResult {
     });
   };
 
-  // Fixed first. Pairings locked on sending come before everything: they never change.
-  for (const payment of payments) {
-    const choice = fixed.get(payment.id);
-    if (!choice?.locked) continue;
-    if (choice.billId === null) {
-      settle(payment, [], "own", true);
-      continue;
-    }
-    const how: PairingHow = choice.person ? "person" : "auto";
-    const chosen = [choice.billId, ...choice.alsoBillIds].map((id) => byId.get(id));
-    if (chosen.every((bill) => bill !== undefined)) settle(payment, chosen as PairingEmail[], how, true);
-    else settle(payment, [], how, true, true);
-  }
-  // Then a person's choices, earliest first, each kept only while every bill in it can still be paid
-  // and is not taken already; otherwise the payment needs a bill again (the choice is ignored, not removed).
-  const picked = payments
-    .filter((payment) => fixed.get(payment.id)?.locked === false)
-    .sort((a, b) => fixed.get(a.id)!.chosenAt.localeCompare(fixed.get(b.id)!.chosenAt) || a.id.localeCompare(b.id));
-  for (const payment of picked) {
+  /** A bill a person's choice can still have: payable, not reported by OurHome, and not paid in full by a payment settled already. */
+  const usable = (bill: PairingEmail | undefined): bill is PairingEmail =>
+    bill !== undefined && isPayableBill(bill) && !reported.has(bill.id) && !(result.paidBy.has(bill.id) && result.leftCents.get(bill.id)! <= 0);
+  /**
+   * Settles one fixed pairing: a locked one as it was sent, a person's choice when `check` finds every bill
+   * in it usable (or without checking, `check` false). Otherwise the payment needs a bill again (the choice
+   * is ignored, not removed). Returns whether the pairing was kept.
+   */
+  const settleFixed = (payment: PairingEmail, check: boolean): boolean => {
     const choice = fixed.get(payment.id)!;
     if (choice.billId === null) {
-      settle(payment, [], "own", false);
-      continue;
+      settle(payment, [], "own", choice.locked);
+      return true;
     }
     const chosen = [choice.billId, ...choice.alsoBillIds].map((id) => byId.get(id));
-    const usable = (bill: PairingEmail | undefined): bill is PairingEmail =>
-      bill !== undefined && isPayableBill(bill) && !reported.has(bill.id) && !result.paidBy.has(bill.id);
-    if (chosen.every(usable)) settle(payment, chosen, "person", false);
-    else settle(payment, [], null, false, false, true);
+    if (choice.locked) {
+      const how: PairingHow = choice.person ? "person" : "auto";
+      if (chosen.every((bill) => bill !== undefined)) settle(payment, chosen as PairingEmail[], how, true);
+      else settle(payment, [], how, true, true);
+      return true;
+    }
+    if (!check || chosen.every(usable)) {
+      settle(payment, chosen as PairingEmail[], "person", false);
+      return true;
+    }
+    settle(payment, [], null, false, false, true);
+    return false;
+  };
+  // Fixed first, earliest chosen first. Which ones hold: pairings locked on sending come before everything
+  // (they never change), then a person's choices, each kept only while every bill in it can still be paid
+  // and is not paid in full already.
+  const fixedFirst = payments
+    .filter((payment) => fixed.has(payment.id))
+    .sort((a, b) => fixed.get(a.id)!.chosenAt.localeCompare(fixed.get(b.id)!.chosenAt) || a.id.localeCompare(b.id));
+  const dropped = new Set<string>();
+  for (const payment of fixedFirst) if (fixed.get(payment.id)!.locked) settleFixed(payment, true);
+  for (const payment of fixedFirst) if (!fixed.get(payment.id)!.locked && !settleFixed(payment, true)) dropped.add(payment.id);
+  // Then again, the ones that hold in the order they were chosen, locked or not: part payments on one bill
+  // are applied in that order, so a payment's part and fee stay as they were when it was sent, whichever of
+  // them was sent first. Without part payments this gives the same as the pass above.
+  for (const map of [result.payments, result.paidBy, result.payers, result.leftCents]) map.clear();
+  for (const payment of fixedFirst) {
+    if (dropped.has(payment.id)) settle(payment, [], null, false, false, true);
+    else settleFixed(payment, false);
   }
 
   // Then the automatic pairing, in payment date order.

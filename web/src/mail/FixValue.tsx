@@ -1,12 +1,15 @@
 // Fix: choosing the right value for one field of an email. Lists each value
 // of the right kind in the email with the words before it; choosing one saves
 // a rule on the biller ("the amount is the value after Current Charges"),
-// used for every email from that biller, past and future.
+// used for every email from that biller, past and future. When nothing else
+// gives the field in this email, the rule can instead be used only in emails
+// where nothing else gives it (owner, 2026-11-08), so a reminder's "Past Due
+// Balance" does not change the bills; each way says what it would change.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import type { BillerMatch } from "../../../src/shared/api";
-import { FIELD_TYPES, type FieldChoice, type FieldName } from "../../../src/shared/extraction";
+import { FIELD_TYPES, type FieldChoice, type FieldName, type RuleWhen } from "../../../src/shared/extraction";
 import { api } from "../api";
 import { Button, ErrorState, LoadingState, Notice } from "../components/ui";
 import { plural } from "../format";
@@ -18,18 +21,76 @@ const KIND_OF_VALUE = { money: "an amount of money", date: "a date", number: "a 
 
 const choiceKey = (choice: FieldChoice) => `${choice.from}|${choice.label.toLowerCase()}|${choice.value.value}`;
 
-/** What saving `choice` would do, in plain words. */
-function Effect({ choice, field, biller, otherEmails }: { choice: FieldChoice; field: FieldName; biller: BillerMatch; otherEmails: number }) {
+/** How many other emails a rule changes, in plain words. */
+function reachText(changes: number, field: FieldName, biller: BillerMatch, otherEmails: number): string {
+  if (otherEmails === 0) return `There are no other emails from ${biller.name} yet. New ones will use it too.`;
+  if (changes === 0) return `It changes nothing in the other ${plural(otherEmails, "email", "emails")} from ${biller.name}.`;
+  return `It changes the ${FIELD_LABELS[field].toLowerCase()} in ${plural(changes, "other email", "other emails")} from ${biller.name}.`;
+}
+
+/** Where a rule is used, as the choice in Fix says it. */
+export function whenLabel(when: RuleWhen, field: FieldName, biller: BillerMatch): string {
   const name = FIELD_LABELS[field].toLowerCase();
-  let reach: string;
-  if (otherEmails === 0) reach = `There are no other emails from ${biller.name} yet. New ones will use it too.`;
-  else if (choice.changes === 0) reach = `It changes nothing in the other ${plural(otherEmails, "email", "emails")} from ${biller.name}.`;
-  else reach = `It changes the ${name} in ${plural(choice.changes, "other email", "other emails")} from ${biller.name}.`;
+  return when === "missing" ? `Only in emails where no ${name} is found otherwise` : `In every email from ${biller.name}`;
+}
+
+/** What saving `choice` would do, in plain words; with both ways to use it when this email has nothing else for the field. */
+function Effect({
+  choice,
+  field,
+  biller,
+  otherEmails,
+  when,
+  onWhen,
+  disabled,
+}: {
+  choice: FieldChoice;
+  field: FieldName;
+  biller: BillerMatch;
+  otherEmails: number;
+  when: RuleWhen;
+  onWhen: (when: RuleWhen) => void;
+  disabled: boolean;
+}) {
+  const radioName = useId();
+  const ways: Array<{ when: RuleWhen; changes: number }> =
+    choice.changesWhenMissing === null
+      ? []
+      : [
+          { when: "missing", changes: choice.changesWhenMissing },
+          { when: "always", changes: choice.changes },
+        ];
   return (
     <div className="flex flex-col gap-2">
-      <Notice tone="info" live>
-        {reach}
-      </Notice>
+      {ways.length > 0 ? (
+        <fieldset className="flex flex-col gap-2">
+          <legend className="text-sm font-medium">Use it</legend>
+          {ways.map((way) => (
+            <label
+              key={way.when}
+              className={`flex cursor-pointer items-start gap-3 rounded-md border bg-surface px-3 py-2 ${when === way.when ? "border-accent" : "border-line"}`}
+            >
+              <input
+                type="radio"
+                name={radioName}
+                value={way.when}
+                checked={when === way.when}
+                onChange={() => onWhen(way.when)}
+                disabled={disabled}
+                className="mt-1 accent-accent"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium">{whenLabel(way.when, field, biller)}</span>
+                <span className="block text-sm text-muted">{reachText(way.changes, field, biller, otherEmails)}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      ) : (
+        <Notice tone="info" live>
+          {reachText(choice.changes, field, biller, otherEmails)}
+        </Notice>
+      )}
       {choice.valuesHere > 1 ? (
         <Notice tone="warning">
           The words "{choice.label}" come before {choice.valuesHere} different values in this email, so it would still need a check.
@@ -65,29 +126,47 @@ export function FixValue({
   const radioName = useId();
   const heading = useRef<HTMLHeadingElement>(null);
   const [chosen, setChosen] = useState<string | null>(null);
+  // Only where nothing else gives the field, when that is offered: it changes the fewest other emails.
+  const [when, setWhen] = useState<RuleWhen>("missing");
   const name = FIELD_LABELS[field].toLowerCase();
 
   // Keyboard and screen reader users land on the question.
   useEffect(() => heading.current?.focus(), []);
 
   const save = useMutation({
-    mutationFn: (label: string) => api.saveBillerRule(biller.id, field, { label }),
-    onSuccess: (_, label) => {
+    mutationFn: (rule: { label: string; when: RuleWhen }) => api.saveBillerRule(biller.id, field, rule),
+    onSuccess: (_, { label, when }) => {
       refreshAfterRuleChange(queryClient, biller.id);
-      onSaved(`Saved. The ${name} in every email from ${biller.name} is now the value after "${label}".`);
+      onSaved(
+        when === "missing"
+          ? `Saved. In emails from ${biller.name} where no ${name} is found otherwise, the ${name} is now the value after "${label}".`
+          : `Saved. The ${name} in every email from ${biller.name} is now the value after "${label}".`,
+      );
     },
   });
   const remove = useMutation({
-    mutationFn: () => api.deleteBillerRule(biller.id, field),
-    onSuccess: () => {
+    mutationFn: (label: string) => api.deleteBillerRule(biller.id, field, label),
+    onSuccess: (_, label) => {
       refreshAfterRuleChange(queryClient, biller.id);
-      onSaved(`Rule removed. The built-in reader picks the ${name} again in emails from ${biller.name}.`);
+      const left = (choices.data?.rules.length ?? 1) - 1;
+      onSaved(
+        left > 0
+          ? `Rule removed. Emails from ${biller.name} no longer look for the ${name} after "${label}".`
+          : `Rule removed. The built-in reader picks the ${name} again in emails from ${biller.name}.`,
+      );
     },
   });
   const busy = save.isPending || remove.isPending;
 
   const data = choices.data;
   const selected = data?.choices.find((choice) => choiceKey(choice) === chosen) ?? null;
+  // The way it would be saved: only where nothing else gives the field when that is offered and chosen.
+  const useWhen: RuleWhen = selected?.changesWhenMissing !== null && selected?.changesWhenMissing !== undefined ? when : "always";
+  // Picked now, and not by a rule on these words that is used the other way: nothing to save.
+  const fieldRules = data?.rules ?? [];
+  const sameWords = selected ? fieldRules.find((rule) => rule.label.toLowerCase() === selected.label.toLowerCase()) : undefined;
+  const switchesWay = sameWords !== undefined && (sameWords.when ?? "always") !== useWhen;
+  const unchanged = selected === null || (selected.current && !switchesWay);
   const failed = save.error ?? remove.error;
 
   return (
@@ -97,19 +176,35 @@ export function FixValue({
           Which is the {name}?
         </h3>
         <p className="mt-1 text-sm text-muted">
-          Choose the right value. OurHomeInbox remembers the words it comes after and uses them for every email from {biller.name}.
+          Choose the right value. OurHomeInbox remembers the words it comes after and uses them for other emails from {biller.name} too.
         </p>
       </div>
 
       {choices.isPending ? <LoadingState label="Looking through this email" /> : null}
       {choices.isError ? <ErrorState error={choices.error} onRetry={() => void choices.refetch()} /> : null}
 
-      {data?.rule ? (
+      {fieldRules.length > 0 ? (
         <Notice tone="info">
-          <p>Picked now by your rule: the value after "{data.rule.label}".</p>
-          <Button variant="secondary" className="mt-2 px-3 py-1" busy={remove.isPending} disabled={busy} onClick={() => remove.mutate()}>
-            Remove the rule
-          </Button>
+          <p>{fieldRules.length === 1 ? "Your rule" : "Your rules"} for the {name} in emails from {biller.name}:</p>
+          <ul className="mt-2 flex flex-col gap-2">
+            {fieldRules.map((rule) => (
+              <li key={rule.label} className="min-w-0">
+                <span className="block wrap-anywhere">
+                  The value after "{rule.label}"{rule.when === "missing" ? `, only in emails where no ${name} is found otherwise` : ""}.
+                </span>
+                <Button
+                  variant="secondary"
+                  className="mt-1 px-3 py-1"
+                  aria-label={fieldRules.length === 1 ? "Remove the rule" : `Remove the rule on "${rule.label}"`}
+                  busy={remove.isPending && remove.variables === rule.label}
+                  disabled={busy}
+                  onClick={() => remove.mutate(rule.label)}
+                >
+                  Remove the rule
+                </Button>
+              </li>
+            ))}
+          </ul>
         </Notice>
       ) : null}
 
@@ -160,7 +255,9 @@ export function FixValue({
         </fieldset>
       ) : null}
 
-      {selected && !selected.current && data ? <Effect choice={selected} field={field} biller={biller} otherEmails={data.otherEmails} /> : null}
+      {selected && !unchanged && data ? (
+        <Effect choice={selected} field={field} biller={biller} otherEmails={data.otherEmails} when={useWhen} onWhen={setWhen} disabled={busy} />
+      ) : null}
       {failed ? (
         <Notice tone="error" live>
           {failed.message}
@@ -171,8 +268,8 @@ export function FixValue({
         <Button
           variant="primary"
           busy={save.isPending}
-          disabled={!selected || selected.current || busy}
-          onClick={() => selected && save.mutate(selected.label)}
+          disabled={unchanged || busy}
+          onClick={() => selected && save.mutate({ label: selected.label, when: useWhen })}
         >
           Use this one
         </Button>

@@ -137,6 +137,13 @@ describe("checkConnection", () => {
     expect(checkConnection({ ...good, name: "" }, null).connection).toMatchObject({ host: "host.docker.internal", port: 1144 });
   });
 
+  it("tries the settings with no folders yet, to load them, but saving still needs one", () => {
+    const noFolders = { ...good, folders: [], folderDraft: "" };
+    expect(checkConnection(noFolders, null)).toEqual({ errors: {}, connection: expect.objectContaining({ folders: [], skipFolders: [] }) });
+    expect(checkMailboxForm(noFolders, null)).toEqual({ errors: { folders: "Add a folder to read, like INBOX or Folders/Bills." }, input: null });
+    expect(checkMailboxForm({ ...noFolders, folderDraft: "INBOX" }, null).input?.folders).toEqual(["INBOX"]);
+  });
+
   it("asks for the password again when the server or login changed, as the server does", () => {
     const form = formFromMailbox(saved);
     for (const change of [{ host: "attacker.example" }, { port: "993" }, { security: "tls" as const }, { username: "other@example.com" }]) {

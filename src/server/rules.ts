@@ -1,8 +1,14 @@
 // A biller's rules, saved with Fix on one of its emails: in that biller's
-// emails, a field is the value after the label the person chose.
+// emails, a field is the value after the label the person chose. A rule is
+// used always (ahead of the built-in reader; one per field), or only in
+// emails where nothing else gives the field (owner, 2026-11-08; any number
+// per field, tried in the order saved). Xcel's payments keep their "always"
+// amount rule, and a reminder's "Past Due Balance" is added beside it,
+// filling in the amount only where nothing else finds one.
 //   GET    /api/billers/:id/rules          its rules, with how many emails each is used on
-//   PUT    /api/billers/:id/rules/:field   save the rule for one field, replacing any
-//   DELETE /api/billers/:id/rules/:field   remove it, so the built-in reader takes over again
+//   PUT    /api/billers/:id/rules/:field   save a rule for one field ({ label, when }): an "always" one
+//                                          replaces the field's "always" one; any rule on the same words is replaced
+//   DELETE /api/billers/:id/rules/:field[?label=...]   remove the field's rules, or only the one on those words
 //
 // Scoped to the household like billers: another household's biller is "not
 // found". Rules are applied when an email is read (captures.ts), never
@@ -12,7 +18,7 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { BillerRuleItem, BillerRulesResponse } from "../shared/api.js";
-import { FIELDS, MAX_RULE_LABEL, type BillerRule, type FieldName } from "../shared/extraction.js";
+import { FIELDS, MAX_RULE_LABEL, RULE_WHEN, type BillerRule, type FieldName, type RuleWhen } from "../shared/extraction.js";
 import type { CaptureStore } from "../store.js";
 import { billerId, listBillers, NOT_FOUND as BILLER_NOT_FOUND } from "./billers.js";
 import type { Database } from "./db.js";
@@ -45,6 +51,7 @@ const ruleSchema = z.object(
       .refine((label) => label.length > 0, "Choose the words the value comes after.")
       .refine((label) => label.length <= MAX_RULE_LABEL, `Keep the words under ${MAX_RULE_LABEL} characters.`)
       .refine((label) => /\p{L}/u.test(label) && !/[\p{Cc}\p{Cf}]/u.test(label), "The words the value comes after must include letters."),
+    when: z.enum(RULE_WHEN, { error: MESSAGES.badShape }).default("always"),
   },
   { error: MESSAGES.badShape },
 );
@@ -53,17 +60,19 @@ interface RuleRow {
   biller_id: number;
   field: string;
   label: string;
+  use_when: RuleWhen;
   created_at: string;
 }
 
 /** Every biller's rules in a household, by biller id, in the order fields are shown. */
 export function householdRules(db: Database, householdId: number): Map<number, BillerRule[]> {
   const byBiller = new Map<number, BillerRule[]>();
-  const rows = db.all<RuleRow>("SELECT biller_id, field, label, created_at FROM biller_rules WHERE household_id = ?", householdId);
+  // By id: a field's "missing" rules are tried in the order they were saved.
+  const rows = db.all<RuleRow>("SELECT biller_id, field, label, use_when, created_at FROM biller_rules WHERE household_id = ? ORDER BY id", householdId);
   for (const field of FIELDS) {
     for (const row of rows.filter((r) => r.field === field)) {
       const list = byBiller.get(row.biller_id);
-      const rule: BillerRule = { field, label: row.label };
+      const rule: BillerRule = { field, label: row.label, when: row.use_when };
       if (list) list.push(rule);
       else byBiller.set(row.biller_id, [rule]);
     }
@@ -107,21 +116,24 @@ export function ruleRoutes(deps: RuleDeps): Hono<AppEnv> {
     if (id === null) return apiError(c, 404, BILLER_NOT_FOUND);
     const householdId = householdOf(c);
     const rules = householdRules(db, householdId).get(id) ?? [];
+    const key = (field: string, label: string) => `${field}|${label.toLowerCase()}`;
     const created = new Map(
-      db.all<RuleRow>("SELECT field, created_at FROM biller_rules WHERE biller_id = ?", id).map((r) => [r.field, r.created_at]),
+      db.all<RuleRow>("SELECT field, label, created_at FROM biller_rules WHERE biller_id = ?", id).map((r) => [key(r.field, r.label), r.created_at]),
     );
     const places = deps.mailboxes.places(householdId).values();
     const emails = await billerEmails(places, deps.store, new BillerMatcher(listBillers(db, householdId)), id);
-    const usedOn = new Map<FieldName, number>();
+    // Which rule picked a field: the one on the words it was found after.
+    const usedOn = new Map<string, number>();
     for (const email of emails) {
       for (const field of finish(email, rules).fields) {
-        if (field.by === "rule") usedOn.set(field.field, (usedOn.get(field.field) ?? 0) + 1);
+        const label = field.values[0]?.label;
+        if (field.by === "rule" && label !== undefined) usedOn.set(key(field.field, label), (usedOn.get(key(field.field, label)) ?? 0) + 1);
       }
     }
     const items: BillerRuleItem[] = rules.map((rule) => ({
       ...rule,
-      createdAt: created.get(rule.field) ?? "",
-      usedOn: usedOn.get(rule.field) ?? 0,
+      createdAt: created.get(key(rule.field, rule.label)) ?? "",
+      usedOn: usedOn.get(key(rule.field, rule.label)) ?? 0,
     }));
     const body: BillerRulesResponse = { rules: items, emails: emails.length };
     return c.json(body);
@@ -131,17 +143,25 @@ export function ruleRoutes(deps: RuleDeps): Hono<AppEnv> {
     const field = c.req.param("field");
     if (!isField(field)) return apiError(c, 404, NO_SUCH_FIELD);
     const householdId = householdOf(c);
-    const { label } = c.req.valid("json");
+    const { label, when } = c.req.valid("json");
     const saved = db.transaction(() => {
       const id = ownBiller(c, db);
       if (id === null) return false;
+      // A rule on the same words is replaced (it may change the way it is used); an "always" one replaces the field's "always" one.
       db.run(
-        `INSERT INTO biller_rules (biller_id, household_id, field, label, created_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (biller_id, field) DO UPDATE SET label = excluded.label, created_at = excluded.created_at`,
+        "DELETE FROM biller_rules WHERE biller_id = ? AND field = ? AND (label = ? COLLATE NOCASE OR (? = 'always' AND use_when = 'always'))",
+        id,
+        field,
+        label,
+        when,
+      );
+      db.run(
+        "INSERT INTO biller_rules (biller_id, household_id, field, label, use_when, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         id,
         householdId,
         field,
         label,
+        when,
         now().toISOString(),
       );
       // A value needed fixing: the biller's run of clean checks starts again.
@@ -157,8 +177,12 @@ export function ruleRoutes(deps: RuleDeps): Hono<AppEnv> {
     if (!isField(field)) return apiError(c, 404, NO_SUCH_FIELD);
     const id = ownBiller(c, db);
     if (id === null) return apiError(c, 404, BILLER_NOT_FOUND);
+    const label = c.req.query("label");
     const removed = db.transaction(() => {
-      const changes = db.run("DELETE FROM biller_rules WHERE biller_id = ? AND field = ?", id, field).changes;
+      const changes =
+        label === undefined
+          ? db.run("DELETE FROM biller_rules WHERE biller_id = ? AND field = ?", id, field).changes
+          : db.run("DELETE FROM biller_rules WHERE biller_id = ? AND field = ? AND label = ? COLLATE NOCASE", id, field, label.replace(/\s+/g, " ").trim()).changes;
       if (changes > 0) breakRun(db, id);
       return changes;
     });

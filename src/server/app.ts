@@ -13,6 +13,7 @@ import { HTTPException } from "hono/http-exception";
 import { log } from "../log.js";
 import type { CheckingState, HealthResponse } from "../shared/api.js";
 import type { CaptureStore } from "../store.js";
+import { asBillRoutes } from "./asBill.js";
 import { billerRoutes } from "./billers.js";
 import { CaptureCache } from "./captureCache.js";
 import { captureRoutes } from "./captures.js";
@@ -94,6 +95,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route("/api", ruleRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
   app.route("/api", tagRoutes({ store: deps.store, db: deps.db, mailboxes, now }));
   app.route("/api", reviewRoutes({ store: deps.store, db: deps.db, mailboxes, cache, now }));
+  app.route("/api", asBillRoutes({ store: deps.store, db: deps.db, mailboxes, cache, now }));
   app.route("/api", userRoutes({ db: deps.db, now }));
   app.route("/api", handoffRoutes({ store: deps.store, db: deps.db, mailboxes, cache, now }));
   app.route("/api", paymentRoutes({ store: deps.store, db: deps.db, mailboxes, cache, now }));
