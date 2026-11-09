@@ -181,6 +181,25 @@ describe("loadConfig", () => {
     expect(loadConfig(setup(yaml, { PROTON_BRIDGE_PASSWORD: "x" })).mailboxes).toHaveLength(1);
   });
 
+  it("accepts the GitHub repo and branch deploy.sh builds from", () => {
+    const yaml = `${PROTON}docker:\n  repo: https://github.com/EOSOClub/OurHomeInbox.git\n  branch: feature/x\n`;
+    expect(loadConfig(setup(yaml, { PROTON_BRIDGE_PASSWORD: "x" })).docker).toEqual({
+      repo: "https://github.com/EOSOClub/OurHomeInbox.git",
+      branch: "feature/x",
+    });
+  });
+
+  it("rejects a repo that is not a git address and a branch with a space", () => {
+    const repo = problemsOf(() =>
+      loadConfig(setup(`${PROTON}docker:\n  repo: EOSOClub/OurHomeInbox\n`, { PROTON_BRIDGE_PASSWORD: "x" })),
+    );
+    expect(repo[0]).toContain("docker.repo");
+    const branch = problemsOf(() =>
+      loadConfig(setup(`${PROTON}docker:\n  branch: my branch\n`, { PROTON_BRIDGE_PASSWORD: "x" })),
+    );
+    expect(branch[0]).toContain("docker.branch");
+  });
+
   it("rejects a misspelt setting in the docker section", () => {
     const problems = problemsOf(() =>
       loadConfig(setup(`${PROTON}docker:\n  netwrok: ourhome_net\n`, { PROTON_BRIDGE_PASSWORD: "x" })),

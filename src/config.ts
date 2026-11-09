@@ -84,6 +84,16 @@ const fileSchema = z
           .optional(),
         port: z.number().int().min(1).max(65535).optional(),
         bind: z.ipv4("must be an address like 127.0.0.1 (this computer only) or 0.0.0.0 (your network)").optional(),
+        // Where deploy.sh builds the code from (deploy.sh -l builds the local
+        // checkout instead). Both default to EOSOClub/OurHomeInbox main.
+        repo: z
+          .string()
+          .regex(/^(https:\/\/|git@)[^\s#]+$/, "must be a git address, like https://github.com/EOSOClub/OurHomeInbox.git")
+          .optional(),
+        branch: z
+          .string()
+          .regex(/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/, "must be a branch name, like main")
+          .optional(),
       })
       .strict()
       .optional(),
@@ -113,6 +123,8 @@ export interface DockerConfig {
   network?: string;
   port?: number;
   bind?: string;
+  repo?: string;
+  branch?: string;
 }
 
 export interface Config {

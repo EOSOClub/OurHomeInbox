@@ -26,7 +26,12 @@
 # folder. This starts it in the background and waits until the web page
 # answers.
 #
-# Usage:  ./deploy.sh [-n] [-s|-y] [--no-build] [--timeout S]
+# The code is built from GitHub (config.yml docker.repo / docker.branch,
+# default EOSOClub/OurHomeInbox main), the same way Our Home's deploy.sh
+# does, so updating is just running this again. -l builds this checkout
+# instead (to try changes not pushed yet).
+#
+# Usage:  ./deploy.sh [-n] [-l] [-b BRANCH] [-s|-y] [--no-build] [--timeout S]
 
 set -uo pipefail
 
@@ -44,6 +49,8 @@ YQ_IMAGE=mikefarah/yq:4.44.3
 # port inside the container).
 YQ_EXPR='(.docker // {} | to_entries | .[] | "DOCKER_" + (.key | upcase) + "=" + ((.value // "") | tostring)), ("WEB_PORT=" + ((.web.port // 8080) | tostring))'
 SERVICE=ourhome-inbox
+# Where the code is built from unless config.yml docker.repo says otherwise.
+DEFAULT_REPO=https://github.com/EOSOClub/OurHomeInbox.git
 # The Proton Bridge from OurHomeServices: its container, and its setup guide.
 BRIDGE_CONTAINER=ourhome_bridge
 BRIDGE_DOCS=https://github.com/EOSOClub/OurHomeServices/tree/main/proton-bridge
@@ -55,6 +62,8 @@ PLACEHOLDER_USER=you@proton.me
 # ---------------------------------------------------------------------------
 NO_BUILD=0
 NO_CACHE=0
+LOCAL=0
+BRANCH=        # empty = config.yml docker.branch, else main
 SETUP=ask      # ask | yes (-s) | no (-y)
 TIMEOUT=120    # seconds to wait for the web page
 
@@ -62,14 +71,17 @@ usage() {
   cat <<EOF
 ${BOLD}OurHomeInbox - Docker deploy${RESET}
 
-Sets up settings on the first run, builds OurHomeInbox from this checkout,
-starts it, then waits until its web page answers.
+Sets up settings on the first run, builds OurHomeInbox from GitHub (the
+newest code on its branch), starts it, then waits until its web page answers.
 
 ${BOLD}Usage:${RESET}
   ./deploy.sh [options]
 
 ${BOLD}Options:${RESET}
   -n, --no-cache       Rebuild every layer and re-pull the base image.
+  -l, --local          Build from this checkout instead of GitHub.
+  -b, --branch BRANCH  Build this GitHub branch (default: config.yml
+                       docker.branch, else main).
   -s, --setup          Go straight to the settings walkthrough.
   -y, --yes            Don't ask about settings; deploy with what is saved.
       --no-build       Skip rebuilding the image; just (re)start it.
@@ -420,6 +432,10 @@ ensure_secret_key() {
 while [ $# -gt 0 ]; do
   case "$1" in
     -n|--no-cache)  NO_CACHE=1 ;;
+    -l|--local)     LOCAL=1 ;;
+    -b|--branch)    shift; BRANCH=${1:-}
+                    [ -n "$BRANCH" ] || { printf 'error: -b/--branch needs a branch name\n' >&2; exit 2; } ;;
+    --branch=*)     BRANCH=${1#*=} ;;
     -s|--setup)     SETUP=yes ;;
     -y|--yes)       SETUP=no ;;
     --no-build)     NO_BUILD=1 ;;
@@ -512,6 +528,40 @@ docker run --rm -i "$YQ_IMAGE" "$YQ_EXPR" < "$SETTINGS" > "$ENV_FILE" \
   || fail "Could not read config.yml - check it is valid YAML."
 NETWORK=$(env_get DOCKER_NETWORK || true); NETWORK=${NETWORK:-ourhome_net}
 ok "Compose values read ($(grep -c . "$ENV_FILE") from config.yml)"
+
+# What to build: GitHub (repo#branch, which BuildKit fetches itself, checking
+# for new commits every build) or this checkout (-l). Compose reads
+# BUILD_CONTEXT from .compose.env. Same as Our Home's deploy.sh.
+if [ "$LOCAL" = 1 ]; then
+  BUILD_CONTEXT=..
+  ok "Source: this checkout ($(cd .. && pwd))"
+else
+  REPO=$(env_get DOCKER_REPO || true); REPO=${REPO:-$DEFAULT_REPO}
+  case "$REPO" in *.git) ;; *) REPO="$REPO.git" ;; esac
+  [ -n "$BRANCH" ] || BRANCH=$(env_get DOCKER_BRANCH || true)
+  BRANCH=${BRANCH:-main}
+  BUILD_CONTEXT="$REPO#$BRANCH"
+  # Catch a mistyped branch now rather than halfway through a build (needs git;
+  # an unreachable GitHub only warns, the build will say more).
+  if command -v git >/dev/null 2>&1 && [ "$NO_BUILD" = 0 ]; then
+    if HEADS=$(git ls-remote --heads "$REPO" "refs/heads/$BRANCH" 2>/dev/null); then
+      [ -n "$HEADS" ] || fail "Branch '$BRANCH' not found at ${REPO%.git}."
+      ok "Source: ${REPO%.git} ($BRANCH @ ${HEADS:0:7})"
+    else
+      warn "Couldn't reach ${REPO%.git} to check branch '$BRANCH'."
+    fi
+  else
+    ok "Source: ${REPO%.git} ($BRANCH)"
+  fi
+  # Commits made here but not pushed are not in a GitHub build: say so.
+  if command -v git >/dev/null 2>&1 && git -C .. rev-parse --git-dir >/dev/null 2>&1; then
+    if [ -n "$(git -C .. status --porcelain 2>/dev/null)" ] \
+       || [ -n "$(git -C .. log --oneline '@{u}..' 2>/dev/null)" ]; then
+      info "This checkout has changes not on GitHub; they are not in this build (-l builds them)."
+    fi
+  fi
+fi
+printf 'BUILD_CONTEXT=%s\n' "$BUILD_CONTEXT" >> "$ENV_FILE"
 
 # Captured mail goes in the repo-root data/ folder. On Linux the container runs
 # as you, so you own what it writes; Docker Desktop handles that itself.

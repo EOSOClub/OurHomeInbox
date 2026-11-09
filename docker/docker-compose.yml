@@ -10,15 +10,17 @@
 # must be running first.
 #
 # Easiest: ./docker/deploy.sh. It creates both settings files on the first
-# run, walks through them, builds, starts OurHomeInbox and waits until the web
-# page answers. It also hands config.yml's docker: section (network, port,
-# who can reach it) and web.port to compose through docker/.compose.env.
+# run, walks through them, builds from GitHub (or this checkout with -l),
+# starts OurHomeInbox and waits until the web page answers. It also hands
+# config.yml's docker: section (network, port, who can reach it, repo and
+# branch) and web.port to compose through docker/.compose.env.
 #
 # By hand, from the repo root:
 #   copy .env.example to .env and config.example.yml to config.yml, fill them in
 #   docker network create ourhome_net # skip if it already exists
 #   docker compose -f docker/docker-compose.yml up -d --build
-# (then always ourhome_net, and the web page on http://127.0.0.1:8080)
+# (then always ourhome_net, the web page on http://127.0.0.1:8080, and the
+# code from GitHub main; BUILD_CONTEXT=.. builds this checkout instead)
 #
 # It runs until stopped: the web page and API, and every mailbox read every
 # capture.every_minutes. Captured mail and accounts live in the repo's data/.
@@ -28,7 +30,12 @@ name: ourhome-inbox
 services:
   ourhome-inbox:
     build:
-      context: ..
+      # GitHub repo#branch (BuildKit fetches it and checks for new commits on
+      # every build), or the folder one level up for this checkout (deploy.sh
+      # -l). deploy.sh sets it from config.yml docker.repo / docker.branch.
+      context: ${BUILD_CONTEXT:-https://github.com/EOSOClub/OurHomeInbox.git#main}
+      # Relative to the source being built, so the image recipe always matches
+      # the code it builds.
       dockerfile: docker/Dockerfile
     image: ourhome/ourhome-inbox:dev
     container_name: ourhome_inbox

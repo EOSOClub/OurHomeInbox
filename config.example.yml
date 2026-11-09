@@ -98,3 +98,10 @@ docker:
   #   127.0.0.1  only this computer
   #   0.0.0.0    any device on your network
   bind: 127.0.0.1
+
+  # Where the code comes from. deploy.sh builds the newest code on this
+  # GitHub branch, so updating is running deploy.sh again (deploy.sh -l
+  # builds the files on this computer instead). Leave these out for the
+  # usual: EOSOClub/OurHomeInbox, branch main.
+  # repo: https://github.com/EOSOClub/OurHomeInbox.git
+  # branch: main
