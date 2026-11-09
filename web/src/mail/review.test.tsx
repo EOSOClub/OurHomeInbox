@@ -180,6 +180,42 @@ describe("review on an email's page", () => {
   });
 });
 
+describe("Previous and Next on an email's page", () => {
+  const pager = () => screen.getByRole("navigation", { name: "Other emails in the list" });
+
+  it("goes through the whole list, newest first, when opened on its own", async () => {
+    stubServer();
+    show("/mail/proton-bills/1/3");
+    await screen.findByText("1 of 3");
+    expect(within(pager()).queryByRole("link", { name: /^Previous email/ })).toBeNull();
+    fireEvent.click(within(pager()).getByRole("link", { name: "Next email: Payment reminder, from City Water" }));
+    expect(await screen.findByText("2 of 3")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Payment reminder" })).toBeTruthy();
+    fireEvent.click(within(pager()).getByRole("link", { name: /^Next email: Newsletter/ }));
+    expect(await screen.findByText("3 of 3")).toBeTruthy();
+    expect(within(pager()).queryByRole("link", { name: /^Next email/ })).toBeNull();
+    fireEvent.click(within(pager()).getByRole("link", { name: /^Previous email: Payment reminder/ }));
+    expect(await screen.findByText("2 of 3")).toBeTruthy();
+  });
+
+  it("keeps to the list it was opened from, and still goes on once an email is marked out of it", async () => {
+    stubServer();
+    show("/?review=todo");
+    fireEvent.click(await screen.findByText("Water bill"));
+    expect(await screen.findByText("1 of 3")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Mark checked" }));
+    expect(await screen.findByText("No longer in this list")).toBeTruthy();
+    fireEvent.click(within(pager()).getByRole("link", { name: /^Next email: Payment reminder/ }));
+    expect(await screen.findByText("1 of 2")).toBeTruthy();
+    // A fresh page for the new email: not the last one's mark.
+    expect(await screen.findByText("Not reviewed yet")).toBeTruthy();
+    // Back still returns to the list as it was left.
+    fireEvent.click(screen.getByRole("link", { name: "Back to captured mail" }));
+    await screen.findByText("Newsletter");
+    expect(rows()).toEqual(["Payment reminder", "Newsletter"]);
+  });
+});
+
 describe("review on the list", () => {
   it("marks several emails at once from Select, and shows each one's mark", async () => {
     const { sent } = stubServer();

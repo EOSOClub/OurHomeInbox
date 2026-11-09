@@ -13,6 +13,7 @@ import {
   localDay,
   moreFiltersOn,
   NO_FILTERS,
+  placeInList,
   tagFilterFrom,
   withFilters,
   withoutFilters,
@@ -307,6 +308,31 @@ describe("listPathFrom", () => {
     expect(listPathFrom(undefined)).toBe("/");
     expect(listPathFrom({ listSearch: "//elsewhere.example" })).toBe("/");
     expect(listPathFrom({ listSearch: 5 })).toBe("/");
+  });
+});
+
+describe("placeInList", () => {
+  const brief = (place: ReturnType<typeof placeInList>) =>
+    place && { previous: place.previous?.id ?? null, next: place.next?.id ?? null, position: place.position, total: place.total };
+
+  it("gives the emails either side and where it is, with none past either end", () => {
+    expect(brief(placeInList(varied, varied, "late"))).toEqual({ previous: "bill", next: "check", position: 2, total: 4 });
+    expect(brief(placeInList(varied, varied, "bill"))).toEqual({ previous: null, next: "late", position: 1, total: 4 });
+    expect(brief(placeInList(varied, varied, "stranger"))).toEqual({ previous: "check", next: null, position: 4, total: 4 });
+  });
+
+  it("steps over emails the filters leave out", () => {
+    const shown = varied.filter((i) => i.id !== "late");
+    expect(brief(placeInList(varied, shown, "bill"))).toEqual({ previous: null, next: "check", position: 1, total: 3 });
+  });
+
+  it("keeps the neighbours of an email that no longer fits the filters", () => {
+    const shown = varied.filter((i) => i.id !== "check");
+    expect(brief(placeInList(varied, shown, "check"))).toEqual({ previous: "late", next: "stranger", position: null, total: 3 });
+  });
+
+  it("gives nothing for an email the list does not have", () => {
+    expect(placeInList(varied, varied, "gone")).toBeNull();
   });
 });
 

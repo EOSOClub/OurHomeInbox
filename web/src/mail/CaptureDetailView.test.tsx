@@ -126,6 +126,14 @@ describe("CaptureDetailView", () => {
     expect(panel.querySelectorAll("pre mark")).toHaveLength(0);
   });
 
+  it("says a receipt with no paid date counts the day it came in", () => {
+    render(<CaptureDetailView detail={detail(makeCapture({ subject: "Payment received", html: "<p>Amount Paid: $42.10</p>" }))} />);
+    const picked = screen.getByRole("region", { name: "Picked out" });
+    const rows = [...picked.querySelectorAll("dl > div")].map((row) => row.textContent);
+    expect(rows[0]).toContain("Amount$42.10");
+    expect(rows[1]).toBe("Paid onNot found in this email, so the day it came in is used");
+  });
+
   it("says what was picked out, where, and marks it in the email", () => {
     render(<CaptureDetailView detail={detail(makeCapture())} />);
     const picked = screen.getByRole("region", { name: "Picked out" });

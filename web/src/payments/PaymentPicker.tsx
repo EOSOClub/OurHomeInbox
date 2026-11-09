@@ -120,7 +120,9 @@ function PaymentPreview({
         <DetailRow label="Subject">{subjectDisplay(payment.subject)}</DetailRow>
         <DetailRow label="Email date">{formatDateTime(payment.date)}</DetailRow>
         <DetailRow label="Amount">{amountText(payment)}</DetailRow>
-        <DetailRow label="Paid on">{payment.paidDate ? formatDay(payment.paidDate) : <span className="text-muted">Not found</span>}</DetailRow>
+        <DetailRow label="Paid on">
+          {payment.paidDate ? formatDay(payment.paidDate) : <span className="text-muted">Not found, so the day the email came in is used</span>}
+        </DetailRow>
       </dl>
       <p className="mt-3 text-sm wrap-anywhere">{effectText(payment, choices.mode, choices.payments.filter((one) => one.state === "this").length)}</p>
       <div className="mt-3 flex flex-wrap items-center gap-3">

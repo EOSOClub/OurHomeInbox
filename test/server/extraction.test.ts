@@ -62,7 +62,21 @@ describe("reading values", () => {
     expect(parseNumber(text, 0)).toEqual({ value: text, length: text.length });
   });
 
-  it.each(["N/A", "12", "Please"])("does not read %s as a number", (text) => {
+  it.each([
+    ["XXXX – 6903", "XXXX - 6903"],
+    ["XXXX — 6903", "XXXX - 6903"],
+    ["XXXX–6903", "XXXX-6903"],
+  ])("reads %s as a number with plain hyphens", (text, value) => {
+    expect(parseNumber(text, 0)).toEqual({ value, length: text.length });
+  });
+
+  it("reads an account number joined by an en dash after its label", () => {
+    const x = email("<p>Account Number: XXXX – 6903</p>");
+    expect(values(x)).toEqual({ accountNo: ["XXXX - 6903"] });
+    expect(x.fields[0]!.values[0]!.shown).toBe("XXXX – 6903");
+  });
+
+  it.each(["N/A", "12", "Please", "XXXX – Paid"])("does not read %s as a number", (text) => {
     expect(parseNumber(text, 0)).toBeNull();
   });
 });

@@ -183,6 +183,33 @@ export function listPathFrom(state: unknown): string {
   return typeof search === "string" && search.startsWith("?") ? `/${search}` : "/";
 }
 
+/** Where an email sits in the list it was opened from, for Previous and Next on its page. */
+export interface ListPlace {
+  previous: CaptureListItem | null;
+  next: CaptureListItem | null;
+  /** Its place in `shown`, from 1; null when it no longer fits the filters. */
+  position: number | null;
+  total: number;
+}
+
+/**
+ * The emails shown just before and after `id`, in the list's order. Found
+ * by where `id` sits in the whole list, so an email that stops fitting the
+ * filters (marked checked while going through To review) still has its
+ * neighbours. Null when the whole list does not have it.
+ */
+export function placeInList(all: readonly CaptureListItem[], shown: readonly CaptureListItem[], id: string): ListPlace | null {
+  const at = all.findIndex((item) => item.id === id);
+  if (at < 0) return null;
+  const isShown = new Set(shown.map((item) => item.id));
+  let previous: CaptureListItem | null = null;
+  for (let i = at - 1; i >= 0 && previous === null; i--) if (isShown.has(all[i]!.id)) previous = all[i]!;
+  let next: CaptureListItem | null = null;
+  for (let i = at + 1; i < all.length && next === null; i++) if (isShown.has(all[i]!.id)) next = all[i]!;
+  const index = shown.findIndex((item) => item.id === id);
+  return { previous, next, position: index < 0 ? null : index + 1, total: shown.length };
+}
+
 /** The day an ISO time falls on in this browser's time zone, "YYYY-MM-DD"; "" when it is not a time. */
 export function localDay(iso: string): string {
   const date = new Date(iso);

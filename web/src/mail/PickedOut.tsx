@@ -255,7 +255,10 @@ export function PickedOut({
           ) : null}
           {missing.map((field) => (
             <FieldRow key={field} field={field} fix={fix}>
-              <span className="text-muted">Not found in this email</span>
+              <span className="text-muted">
+                {/* Pairing and OurHome both count a payment with no paid date as paid the day its email came in. */}
+                {field === "paidDate" ? "Not found in this email, so the day it came in is used" : "Not found in this email"}
+              </span>
             </FieldRow>
           ))}
           {extra ? (

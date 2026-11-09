@@ -5,7 +5,8 @@
 // its payment (PaymentEditor), for a reminder Use as the bill (AsBillButton),
 // and, right after a Fix, what pairing found then (MatchAfterFix).
 // "Back to captured mail" returns to the
-// list with the search and filters it was opened from. Under the details:
+// list with the search and filters it was opened from, and Previous and Next
+// beside it open the emails either side in that list (EmailPager). Under the details:
 // its biller, or, when no biller matches, buttons to start a biller from the
 // sender or add the sender to one the household already has.
 
@@ -18,6 +19,7 @@ import { Button, buttonClasses, ErrorState, LoadingState } from "../components/u
 import { AsBillButton } from "../mail/AsBill";
 import { listPathFrom } from "../mail/captureList";
 import { CaptureDetailView } from "../mail/CaptureDetailView";
+import { EmailPager } from "../mail/EmailPager";
 import { CaptureTagEditor } from "../mail/CaptureTagEditor";
 import { CaptureReviewEditor } from "../mail/CaptureReview";
 import { MatchAfterFix } from "../payments/MatchAfterFix";
@@ -85,19 +87,25 @@ function BillerActions({ detail }: { detail: CaptureDetailResponse }) {
 
 export function CaptureDetailPage() {
   const { mailbox = "", uidValidity = "", uid = "" } = useParams();
-  const capture = useCapture(`${mailbox}/${uidValidity}/${uid}`);
+  const id = `${mailbox}/${uidValidity}/${uid}`;
+  const capture = useCapture(id);
   const listPath = listPathFrom(useLocation().state);
 
   return (
     <div>
-      <Link to={listPath} className="mb-4 inline-flex items-center gap-1 text-sm font-medium text-accent hover:underline">
-        <ArrowLeft aria-hidden className="size-4" />
-        Back to captured mail
-      </Link>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <Link to={listPath} className="inline-flex items-center gap-1 text-sm font-medium text-accent hover:underline">
+          <ArrowLeft aria-hidden className="size-4" />
+          Back to captured mail
+        </Link>
+        <EmailPager captureId={id} />
+      </div>
       {capture.isPending ? <LoadingState label="Loading this email" /> : null}
       {capture.isError ? <ErrorState error={capture.error} onRetry={() => void capture.refetch()} /> : null}
       {capture.data ? (
         <CaptureDetailView
+          // A new email from Previous or Next starts fresh: no Fix left open, no message about the last one.
+          key={capture.data.id}
           detail={capture.data}
           tags={<CaptureTagEditor detail={capture.data} />}
           review={<CaptureReviewEditor detail={capture.data} />}

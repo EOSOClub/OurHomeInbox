@@ -114,17 +114,24 @@ export function parseDate(text: string, at = 0): ParsedValue | null {
   );
 }
 
-// 14293185, 7353530-1762-8, XX-12979980-X, *****-53037, XXXX - 6903.
-const NUMBER = /[A-Za-z0-9*][A-Za-z0-9*._/-]*(?: - [A-Za-z0-9*]+)*/y;
+// 14293185, 7353530-1762-8, XX-12979980-X, *****-53037, XXXX - 6903. Billers
+// also join the parts with an en or em dash ("XXXX – 6903"), so those are
+// read as hyphens.
+const NUMBER = /[A-Za-z0-9*][A-Za-z0-9*._/–—-]*(?: [–—-] [A-Za-z0-9*]+)*/y;
+const OTHER_DASH = /[–—]/g;
 
-/** An account, invoice or confirmation number: 3 to 40 characters with at least one digit, so "N/A" is not one. */
+/**
+ * An account, invoice or confirmation number: 3 to 40 characters with at
+ * least one digit, so "N/A" is not one. Its value has plain hyphens for any
+ * en or em dash it was printed with.
+ */
 export function parseNumber(text: string, at = 0): ParsedValue | null {
   NUMBER.lastIndex = at;
   const m = NUMBER.exec(text);
   if (!m) return null;
-  const shown = m[0].replace(/[._/-]+$/, "");
+  const shown = m[0].replace(/[._/–—-]+$/, "");
   if (!/\d/.test(shown) || shown.length < 3 || shown.length > 40) return null;
-  return { value: shown, length: shown.length };
+  return { value: shown.replace(OTHER_DASH, "-"), length: shown.length };
 }
 
 const PARSERS: Record<(typeof FIELD_TYPES)[FieldName], (text: string, at: number) => ParsedValue | null> = {
