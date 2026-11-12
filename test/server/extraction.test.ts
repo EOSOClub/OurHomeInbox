@@ -192,6 +192,55 @@ describe("the kind of email", () => {
     expect(x.kind).toBe("receipt");
   });
 
+  // Found 2026-11-11: these were read as receipts, so a failed payment could reach OurHome as paid.
+  it.each([
+    "Your payment could not be processed",
+    "Payment not received",
+    "Your payment was not successful",
+    "Your payment has not been posted",
+    "Payment declined",
+    "Your payment failed",
+    "Your payment was returned",
+    "Your AutoPay payment was unsuccessful",
+    "We were unable to process your payment",
+    "Your payment didn’t go through",
+    "Action needed: declined payment",
+  ])("is a failed payment, never a receipt, for the subject %s", (subject) => {
+    const x = email("<p>Payment Date: 10/01/2026</p><p>Payment Amount: $60.00</p><p>Confirmation Number: 12345678</p>", subject);
+    expect(x.kind).toBe("failed");
+    expect(x.kindReason).toContain("the payment did not go through");
+  });
+
+  it("is a failed payment when the email says so in a heading of its own", () => {
+    const x = email("<h1>Payment Declined</h1><p>Payment Amount: $60.00</p>", "An update on your account");
+    expect([x.kind, x.kindReason]).toEqual(["failed", 'The email says "Payment Declined": the payment did not go through.']);
+  });
+
+  it.each([
+    ["Payment received", "<p>Amount Paid: $60.00</p><p>Returned payment fee: $30.00 may apply.</p>"],
+    ["Payment received", "<p>If your payment is declined by your bank, a fee applies.</p><p>Amount Paid: $60.00</p>"],
+    ["Payment confirmation", "<p>Payment Date: 10/01/2026</p><p>Amount: $60.00</p>"],
+    ["Thank you for your payment", "<p>Amount: $60.00</p>"],
+    ["Your scheduled payment was processed", "<p>Payment Date: 10/01/2026</p><p>Amount: $60.00</p>"],
+    ["Your payment was processed as scheduled", "<p>Payment Date: 10/01/2026</p><p>Amount: $60.00</p>"],
+  ])("is still a receipt for %s with fine print about failed or scheduled payments", (subject, html) => {
+    expect(email(html, subject).kind).toBe("receipt");
+  });
+
+  it.each([
+    ["Your payment will be processed on Nov 5", "payment will be"],
+    ["Your AutoPay payment is scheduled", "payment is scheduled"],
+    ["Upcoming AutoPay payment", "Upcoming AutoPay payment"],
+  ])("is a reminder, not a receipt, for a payment still to come: %s", (subject, words) => {
+    const x = email("<p>Payment Date: 11/05/2026</p><p>Payment Amount: $60.00</p>", subject);
+    expect([x.kind, x.kindReason]).toEqual(["reminder", `The subject says "${words}": the payment has not been made yet.`]);
+  });
+
+  it("leaves a bill a bill when its subject mentions a scheduled payment", () => {
+    const x = email("<p>Amount Due: $60.00</p><p>Due Date: 11/05/2026</p>", "Your bill is ready and your payment is scheduled");
+    expect(x.kind).toBe("bill");
+  });
+
   it("is a bill with a due date but no amount, and a statement with neither", () => {
     expect(email("<p>Due Date: 11/04/2026</p>").kind).toBe("bill");
     const statement = email("<p>Your statement is ready. Log in to see it.</p>", "Your statement is ready");

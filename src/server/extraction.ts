@@ -1,7 +1,8 @@
 // The built-in reader: picks the amount, dates and numbers out of a bill
 // email by the labels billers put beside them ("Amount Due: $114.93", or
 // "Amount Billed:" in one table cell and "$4.13" in the next), and decides
-// whether the email is a bill, a reminder, a receipt or a statement. A
+// whether the email is a bill, a reminder, a receipt, a statement or a
+// payment that failed. A
 // biller's rules (saved with Fix) add labels of its own, tried first, or,
 // for a rule used only where nothing else gives the field, tried last; Fix
 // itself is choicesFor, at the end.
@@ -370,15 +371,56 @@ const REMINDER_WORDS = /\b(?:reminder|second notice|final notice|past due|overdu
 // A heading line on its own, such as the city's "Second Notice".
 const REMINDER_HEADING = /^(?:(?:second|final|past due|overdue) notice|(?:payment |bill )?reminder)$/i;
 
+// A payment that did not go through. Looked for before the receipt words,
+// which "Your payment could not be processed" and "Payment not received"
+// also hold: read as a receipt, a failed payment would pair with its bill and
+// reach OurHome as paid (found 2026-11-11).
+const FAILED_WORD = "failed|declined|unsuccessful|returned|reversed|rejected";
+const NOT = "(?:\\bnot\\b|n['’]t\\b|\\bunable to be\\b)";
+const FAILED_WORDS = new RegExp(
+  [
+    // "payment failed", "your payment was declined", "payment has been returned"
+    `\\bpayment\\b[^.!?]{0,40}?\\b(?:${FAILED_WORD})\\b`,
+    // "payment could not be processed", "payment not received", "payment was not successful", "payment didn't go through"
+    `\\bpayment\\b[^.!?]{0,30}?${NOT}[^.!?]{0,15}?\\b(?:received|posted|processed|successful|completed?|accepted|made|go through)\\b`,
+    // "failed payment", "declined payment", "payment failure"
+    `\\b(?:${FAILED_WORD}) payment\\b`,
+    "\\bpayment (?:failure|error)\\b",
+    // "we were unable to process your payment", "we could not take your payment"
+    "\\b(?:unable to|could not|couldn['’]t|cannot|can['’]t|failed to) (?:process|complete|accept|take|collect)\\b[^.!?]{0,20}?\\bpayment\\b",
+  ].join("|"),
+  "i",
+);
+// A heading line on its own, such as "Payment Declined". Only a whole line counts: fine print such as
+// "Returned payment fee: $30.00" or "If your payment is declined..." says nothing about this payment.
+const FAILED_HEADING = new RegExp(
+  `^(?:your )?(?:(?:auto ?pay )?payment (?:has |was |is )?(?:${FAILED_WORD}|not (?:been )?(?:received|processed|successful|completed?|accepted))|(?:${FAILED_WORD}) payment|payment (?:failure|error))[.!]?$`,
+  "i",
+);
+// A payment that has not been made yet: "Your payment is scheduled", "Your
+// payment will be processed on Nov 5", "Upcoming AutoPay payment". Not "was
+// processed as scheduled", which says it was made.
+const SCHEDULED_WORDS =
+  /\bpayment\b[^.!?]{0,40}?\b(?:(?<!\bas )scheduled|pending|will be)\b|\bupcoming\b[^.!?]{0,20}?\bpayment\b|\bwill be (?:processed|made|withdrawn|deducted|charged|drafted|debited|taken|paid)\b/i;
+
 function decideKind(subject: string, pieces: readonly string[], fields: readonly PickedField[]): { kind: EmailKind; reason: string } {
   const has = (field: FieldName) => fields.some((f) => f.field === field);
+  const failed = FAILED_WORDS.exec(subject);
+  if (failed) return { kind: "failed", reason: `The subject says "${failed[0]}": the payment did not go through.` };
+  const failedHeading = pieces.find((piece) => FAILED_HEADING.test(piece));
+  if (failedHeading) return { kind: "failed", reason: `The email says "${failedHeading}": the payment did not go through.` };
+  // Where the email would otherwise be a receipt, a payment still to come makes it a reminder: nothing has been paid yet.
+  const scheduled = SCHEDULED_WORDS.exec(subject);
+  const notYet = (words: string) => ({ kind: "reminder" as const, reason: `The subject says "${words}": the payment has not been made yet.` });
   const receipt = RECEIPT_WORDS.exec(subject);
+  if (receipt && scheduled) return notYet(scheduled[0]);
   if (receipt) return { kind: "receipt", reason: `The subject says "${receipt[0]}".` };
   const reminder = REMINDER_WORDS.exec(subject);
   if (reminder) return { kind: "reminder", reason: `The subject says "${reminder[0]}".` };
   const heading = pieces.find((piece) => REMINDER_HEADING.test(piece));
   if (heading) return { kind: "reminder", reason: `The email says "${heading}".` };
   if ((has("paidDate") || has("confirmationNo")) && !has("dueDate")) {
+    if (scheduled) return notYet(scheduled[0]);
     return { kind: "receipt", reason: "It has a payment date or confirmation number and no due date." };
   }
   if (has("amount")) return { kind: "bill", reason: "It has an amount to pay." };

@@ -11,6 +11,7 @@ export const KIND_LABELS: Record<EmailKind, string> = {
   reminder: "Reminder",
   receipt: "Receipt",
   statement: "Statement",
+  failed: "Failed payment",
 };
 
 export const FIELD_LABELS: Record<FieldName, string> = {
@@ -29,6 +30,7 @@ export const EXPECTED_FIELDS: Record<EmailKind, readonly FieldName[]> = {
   reminder: ["amount", "dueDate"],
   receipt: ["amount", "paidDate"],
   statement: [],
+  failed: ["amount"],
 };
 
 const DOLLARS = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });

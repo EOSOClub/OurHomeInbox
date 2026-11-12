@@ -22,8 +22,15 @@ export const FIELD_TYPES: Record<FieldName, "money" | "date" | "number"> = {
  * - reminder: a reminder of a bill already sent ("Second Notice", "Bill Due").
  * - receipt: confirms a payment.
  * - statement: none of those, such as "your statement is ready" with no amount.
+ * - failed: a payment that did not go through ("Your payment could not be
+ *   processed", "Payment declined"). Nothing was paid, so it is never a
+ *   receipt and never sent to OurHome; the bill is still owed.
+ *
+ * A notice that a payment is scheduled or will be made ("Your payment will be
+ * processed on Nov 5") is not a receipt either: nothing has been paid yet. It
+ * is a reminder, so it can be used as the bill when it is all the biller sends.
  */
-export const EMAIL_KINDS = ["bill", "reminder", "receipt", "statement"] as const;
+export const EMAIL_KINDS = ["bill", "reminder", "receipt", "statement", "failed"] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
 
 /** A range of characters in one piece, `end` exclusive. */

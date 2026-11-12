@@ -10,6 +10,7 @@ import {
   isoDay,
   maybeDuplicateReason,
   PAIRING_REASONS,
+  FAILED_REASON,
   REMINDER_REASON,
   type HandoffInput,
   type PaymentHandoff,
@@ -61,6 +62,8 @@ describe("handoffDecision", () => {
   it("never sends reminders, statements, Not a bill, or emails from before the start date", () => {
     expect(decide(item({}, { kind: "reminder" }))).toEqual({ state: "never", reason: REMINDER_REASON });
     expect(decide(item({}, { kind: "statement" }))).toEqual({ state: "never", reason: "Statements are not sent: there is nothing to pay." });
+    // Even Checked: a failed payment must never reach OurHome as a payment.
+    expect(decide(item({ review: checked }, { kind: "failed" }))).toEqual({ state: "never", reason: FAILED_REASON });
     expect(decide(item({ review: { state: "not-bill", by: "Sam", at: "x" } }))).toEqual({ state: "never", reason: "Marked Not a bill." });
     expect(decide(item({ review: checked }), { startDate: "2026-10-21" })).toMatchObject({ state: "never", reason: expect.stringContaining("before the OurHome connection's start date") });
     // The start date's own day counts; with no connection there is no start date to miss.

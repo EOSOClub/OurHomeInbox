@@ -5,7 +5,7 @@
 //   Never: reminders (OurHome gets the bill itself; a reminder a person marked
 //   as the bill, or one from a biller whose reminders are its bills, reaches
 //   here as a bill, see asBill.ts), statements (nothing to
-//   pay), credits (nothing owed), emails marked Not a bill, and emails dated
+//   pay), payments that failed (nothing was paid), credits (nothing owed), emails marked Not a bill, and emails dated
 //   before the connection's start date.
 //   Waits: no amount, or two different amounts (Fix settles it; Checked alone
 //   does not say which is right).
@@ -199,6 +199,8 @@ const CHECK = "Waits for someone to mark it Checked";
 export const REMINDER_REASON =
   "Reminders are not sent: OurHome gets the bill itself. If the bill's own email never came in, use this reminder as the bill (in Picked out). If this biller sends all its bills as reminders, say so on the biller's page.";
 
+export const FAILED_REASON = "A payment that did not go through is not sent: nothing was paid, and its bill is still owed.";
+
 export const PAIRING_REASONS = {
   needsBill: "Needs a bill: no bill email fits this payment. On its page, use Choose a bill, or mark it Paid on its own.",
   staleChoice: "The bill chosen for this payment can no longer be used. Choose another.",
@@ -242,6 +244,7 @@ function checkDecision(input: HandoffInput): HandoffDecision {
 
   if (item.picked.kind === "reminder") return never(REMINDER_REASON);
   if (item.picked.kind === "statement") return never("Statements are not sent: there is nothing to pay.");
+  if (item.picked.kind === "failed") return never(FAILED_REASON);
   if (item.review?.state === "not-bill") return never("Marked Not a bill.");
   if (startDate !== null) {
     const day = input.emailDay;
